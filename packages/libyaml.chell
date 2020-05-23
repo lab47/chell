@@ -1,0 +1,13 @@
+pkg(
+  name = "libyaml",
+  source = "https://github.com/yaml/libyaml/archive/0.2.4.tar.gz",
+  version = "0.2.4",
+  sha256 = "02265e0229675aea3a413164b43004045617174bdb2c92bf6782f618f8796b55",
+  dependencies = ["autoconf", "automake", "libtool"]
+)
+
+def install(ctx):
+  system("env")
+  system("./bootstrap")
+  system("./configure", "--disable-dependency-tracking", "--prefix="+ctx.prefix)
+  system("make", "install")

@@ -1,0 +1,27 @@
+pkg(
+    name = "ruby",
+    version = "2.6.6",
+    source = "https://cache.ruby-lang.org/pub/ruby/2.6/ruby-2.6.6.tar.xz",
+    sha256 = "5db187882b7ac34016cd48d7032e197f07e4968f406b0690e20193b9b424841f",
+    dependencies = ["pkg-config", "libyaml", "openssl", "readline"]
+)
+
+def install(ctx):
+  paths = ":".join([ctx.pkgs.libyaml, ctx.pkgs.openssl, ctx.pkgs.readline])
+  args = [
+    "--prefix="+ctx.prefix,
+    "--enable-shared",
+    "--disable-silent-rules",
+    "--with-sitedir="+ctx.prefix+"/lib/ruby/site_ruby",
+    "--with-vendordir="+ctx.prefix+"/lib/ruby/vendor_ruby",
+    "--with-opt-dir="+paths,
+    "--without-gmp"
+  ]
+
+  # Correct MJIT_CC to not use superenv shim
+  args.append("MJIT_CC=/usr/bin/clang")
+
+  system("./configure", *args)
+
+  system("make")
+  system("make", "install")

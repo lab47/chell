@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/evanphx/chell/pkg/ruby"
 	"github.com/hashicorp/go-hclog"
 	archiver "github.com/mholt/archiver/v3"
@@ -25,6 +26,7 @@ type Package struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 	Rebuild int    `json:"rebuild"`
+	Source  string `json:"url"`
 	Sha256  string `json:"sha256"`
 
 	Deps struct {
@@ -32,6 +34,8 @@ type Package struct {
 	} `json:"dependencies"`
 
 	Dependencies []*Package
+
+	Install []string
 }
 
 type Downloader struct {
@@ -139,11 +143,55 @@ func isDyLib(path string) bool {
 	return false
 }
 
+func (i *Installer) downloadIntoStore(L hclog.Logger, pkg *Package) error {
+	root := filepath.Join(i.StorePath, i.storeName(pkg))
+
+	i.Installed[pkg.Name] = &installedPackage{pkg: pkg, path: root}
+
+	if _, err := os.Stat(root); err == nil {
+		return nil
+	}
+
+	for _, dep := range pkg.Dependencies {
+		err := i.downloadIntoStore(L, dep)
+		if err != nil {
+			return err
+		}
+	}
+
+	path, err := i.Downloader.Download(L, pkg)
+	if err != nil {
+		return err
+	}
+
+	if _, err := os.Stat(root); err != nil {
+		L.Info("unpackaging package", "name", pkg.Name, "cache-path", path, "store-path", root)
+
+		err = archiver.DefaultTarGz.Unarchive(path, root)
+		if err != nil {
+			return err
+		}
+	}
+
+	i.Installed[pkg.Name] = &installedPackage{pkg: pkg, path: root}
+
+	return err
+}
+
 func (i *Installer) Install(L hclog.Logger, pkg *Package) (*InstalledPackage, error) {
 	if i.Installed == nil {
 		i.Installed = make(map[string]*installedPackage)
 	}
 
+	err := i.downloadIntoStore(L, pkg)
+	if err != nil {
+		return nil, err
+	}
+
+	return i.Unpack(L, pkg)
+}
+
+func (i *Installer) Unpack(L hclog.Logger, pkg *Package) (*InstalledPackage, error) {
 	root := filepath.Join(i.StorePath, i.storeName(pkg))
 
 	out := &InstalledPackage{
@@ -152,29 +200,13 @@ func (i *Installer) Install(L hclog.Logger, pkg *Package) (*InstalledPackage, er
 	}
 
 	for _, dep := range pkg.Dependencies {
-		ip, err := i.Install(L, dep)
+		ip, err := i.Unpack(L, dep)
 		if err != nil {
 			return nil, err
 		}
 
 		out.Dependencies = append(out.Dependencies, ip)
 	}
-
-	path, err := i.Downloader.Download(L, pkg)
-	if err != nil {
-		return nil, err
-	}
-
-	if _, err := os.Stat(root); err != nil {
-		L.Info("unpackaging package", "name", pkg.Name, "cache-path", path, "store-path", root)
-
-		err = archiver.DefaultTarGz.Unarchive(path, root)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	i.Installed[pkg.Name] = &installedPackage{pkg: pkg, path: root}
 
 	libPath := filepath.Join(root, pkg.Name, pkg.Version, "lib")
 
@@ -262,6 +294,11 @@ func (i *Installer) Install(L hclog.Logger, pkg *Package) (*InstalledPackage, er
 			for _, lib := range replaceLibs {
 				ipkg := i.Installed[lib.name]
 
+				if ipkg == nil {
+					spew.Dump(lib.name)
+					panic("huh?")
+				}
+
 				newPath, err := filepath.Abs(filepath.Join(ipkg.path, ipkg.pkg.Name, ipkg.pkg.Version, lib.lib))
 				if err != nil {
 					return nil, err
@@ -295,6 +332,13 @@ func (i *Installer) Install(L hclog.Logger, pkg *Package) (*InstalledPackage, er
 		}
 	}
 
+	var hr HomebrewRelocator
+
+	err = hr.Relocate(out)
+	if err != nil {
+		return nil, err
+	}
+
 	return out, nil
 }
 
@@ -302,25 +346,65 @@ type Tree struct {
 	Path string
 }
 
-func (t *Tree) Add(L hclog.Logger, pkg *InstalledPackage) error {
-	bin, err := filepath.Abs(filepath.Join(pkg.StorePath, pkg.Package.Name, pkg.Package.Version, "bin"))
-	if err != nil {
-		return err
-	}
+var linkDirs = []string{"bin", "lib", "include", "man", "share"}
 
-	files, err := ioutil.ReadDir(bin)
+func (t *Tree) addDir(L hclog.Logger, spath, tpath string) error {
+	files, err := ioutil.ReadDir(spath)
 	if err != nil {
 		return err
 	}
 
 	for _, file := range files {
-		fpath := filepath.Join(bin, file.Name())
+		fpath := filepath.Join(spath, file.Name())
 
-		tpath := filepath.Join(t.Path, file.Name())
+		tfpath := filepath.Join(tpath, file.Name())
 
-		L.Debug("populating tree", "from", fpath, "to", tpath)
+		if file.IsDir() {
+			err = os.MkdirAll(tfpath, 0755)
+			if err != nil {
+				return err
+			}
 
-		err := os.Symlink(fpath, tpath)
+			err = t.addDir(L, fpath, tfpath)
+			if err != nil {
+				return err
+			}
+		} else {
+			L.Debug("populating tree", "from", fpath, "to", tfpath)
+
+			err = os.Symlink(fpath, tfpath)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (t *Tree) Add(L hclog.Logger, pkg *InstalledPackage) error {
+	root, err := filepath.Abs(filepath.Join(pkg.StorePath, pkg.Package.Name, pkg.Package.Version))
+	if err != nil {
+		return err
+	}
+
+	for _, ld := range linkDirs {
+		spath := filepath.Join(root, ld)
+
+		if _, err := os.Stat(spath); err != nil {
+			continue
+		}
+
+		tpath := filepath.Join(t.Path, ld)
+
+		if _, err := os.Stat(tpath); err != nil {
+			err := os.MkdirAll(tpath, 0755)
+			if err != nil {
+				return err
+			}
+		}
+
+		err = t.addDir(L, spath, tpath)
 		if err != nil {
 			return err
 		}
@@ -330,10 +414,26 @@ func (t *Tree) Add(L hclog.Logger, pkg *InstalledPackage) error {
 }
 
 type Forest struct {
-	Path string
+	Path      string
+	Installed map[string]struct{}
 }
 
 func (f *Forest) Add(L hclog.Logger, pkg *InstalledPackage) error {
+	if f.Installed == nil {
+		f.Installed = make(map[string]struct{})
+	}
+
+	if _, ok := f.Installed[pkg.StorePath]; ok {
+		return nil
+	}
+
+	for _, sp := range pkg.Dependencies {
+		err := f.Add(L, sp)
+		if err != nil {
+			return err
+		}
+	}
+
 	root, err := filepath.Abs(f.Path)
 	if err != nil {
 		return err
@@ -367,7 +467,7 @@ func (f *Forest) Add(L hclog.Logger, pkg *InstalledPackage) error {
 	return t.Add(L, pkg)
 }
 
-const coreTap = "/usr/local/Homebrew/Library/Taps/homebrew/homebrew-core/Formula"
+const CoreTap = "/usr/local/Homebrew/Library/Taps/homebrew/homebrew-core/Formula"
 
 type InstallOptions struct {
 	Debug      bool
@@ -401,19 +501,8 @@ func RootedInstallOptions(root string) (InstallOptions, error) {
 	return opts, nil
 }
 
-func Install(name string, opts InstallOptions) error {
-	level := hclog.Info
-
-	if opts.Debug {
-		level = hclog.Trace
-	}
-
-	L := hclog.New(&hclog.LoggerOptions{
-		Name:  "chell",
-		Level: level,
-	})
-
-	path := filepath.Join(coreTap, name+".rb")
+func Install(L hclog.Logger, name string, opts InstallOptions) error {
+	path := filepath.Join(CoreTap, name+".rb")
 
 	if _, err := os.Stat(path); err != nil {
 		return fmt.Errorf("unknown package: %s", name)
