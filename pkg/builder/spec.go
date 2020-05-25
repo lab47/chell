@@ -46,6 +46,8 @@ type Env struct {
 	StoreDir string
 }
 
+const ManifestName = ".chell-manifest.json"
+
 func (s *Spec) Build(ctx context.Context, L hclog.Logger, env *Env, build func(string, string) ([]byte, error)) (string, error) {
 	var manifest Manifest
 
@@ -204,7 +206,7 @@ func (s *Spec) Build(ctx context.Context, L hclog.Logger, env *Env, build func(s
 		}
 	}
 
-	man, err := os.Create(filepath.Join(installDir, ".chell-manifest.json"))
+	man, err := os.Create(filepath.Join(installDir, ManifestName))
 	if err != nil {
 		return "", err
 	}

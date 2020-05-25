@@ -8,6 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/evanphx/chell/pkg/builder"
 	"github.com/evanphx/chell/pkg/chell"
 	"github.com/evanphx/chell/pkg/lang"
 	"github.com/hashicorp/go-hclog"
@@ -127,6 +128,11 @@ func (n *Native) calculateStoreNames(fns []*toProcess) (map[string]string, error
 	return names, nil
 }
 
+func (n *Native) checkInstalled(storeName string, opts chell.InstallOptions) bool {
+	_, err := os.Stat(filepath.Join(opts.StorePath, storeName, builder.ManifestName))
+	return err == nil
+}
+
 func (n *Native) Install(ctx context.Context, name string, opts chell.InstallOptions) error {
 	n.L.Debug("calculating functions to install")
 
@@ -153,16 +159,26 @@ func (n *Native) Install(ctx context.Context, name string, opts chell.InstallOpt
 
 	for _, tp := range tps {
 		fn := tp.fn
-		buildDir := filepath.Join(opts.CachePath, fmt.Sprintf("build-%s-%s", fn.Package.Name, fn.Package.Version))
 
-		n.L.Debug("building package", "package", fn.Package.Name, "build-dir", buildDir)
-
-		sp, err := fn.Install(ctx, n.L, buildDir, opts.StorePath)
+		storeName, err := fn.StoreName(ctx)
 		if err != nil {
 			return err
 		}
 
-		n.L.Debug("installed to store", "store-path", sp)
+		if n.checkInstalled(storeName, opts) {
+			n.L.Info("using installed package", "name", fn.Package.Name, "version", fn.Package.Version, "store-name", storeName)
+		} else {
+			buildDir := filepath.Join(opts.CachePath, fmt.Sprintf("build-%s-%s", fn.Package.Name, fn.Package.Version))
+
+			n.L.Debug("building package", "package", fn.Package.Name, "build-dir", buildDir)
+
+			sp, err := fn.Install(ctx, n.L, buildDir, opts.StorePath)
+			if err != nil {
+				return err
+			}
+
+			n.L.Debug("installed to store", "store-path", sp)
+		}
 	}
 
 	return nil
