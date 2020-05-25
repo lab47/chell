@@ -1,6 +1,7 @@
 package lang
 
 import (
+	"bufio"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -58,20 +59,69 @@ func systemFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple,
 	var segments []string
 
 	for _, arg := range args {
-		segments = append(segments, arg.String())
+		switch sv := arg.(type) {
+		case starlark.String:
+			segments = append(segments, string(sv))
+		default:
+			segments = append(segments, arg.String())
+		}
 	}
 
-	str := strings.Join(segments, " ")
+	env.L.Debug("invoking system", "command", segments)
 
-	fmt.Printf("|> %s\n", str)
+	if env.h != nil {
+		for _, seg := range segments {
+			fmt.Fprintln(env.h, seg)
+		}
+		fmt.Fprintln(env.h, strings.Join(env.extraEnv, ":"))
 
-	cmd := exec.Command("sh", "-c", str)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+		if env.hashOnly {
+			return starlark.None, nil
+		}
+	}
+
+	cmd := exec.Command(segments[0], segments[1:]...)
+	or, err := cmd.StdoutPipe()
+	if err != nil {
+		return starlark.None, err
+	}
+	er, err := cmd.StderrPipe()
+	if err != nil {
+		return starlark.None, err
+	}
+
 	cmd.Env = env.extraEnv
 	cmd.Dir = env.buildDir
 
-	err := cmd.Run()
+	go func() {
+		br := bufio.NewReader(or)
+		for {
+			line, err := br.ReadString('\n')
+			if len(line) > 0 {
+				fmt.Printf("%s │ %s", env.outputPrefix, line)
+			}
+
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	go func() {
+		br := bufio.NewReader(er)
+		for {
+			line, err := br.ReadString('\n')
+			if len(line) > 0 {
+				fmt.Printf("%s │ %s", env.outputPrefix, line)
+			}
+
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	err = cmd.Run()
 	if err != nil {
 		return nil, err
 	}
@@ -157,6 +207,14 @@ func inreplaceFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tup
 
 	env := thread.Local("install-env").(*installEnv)
 
+	if env.h != nil {
+		fmt.Fprintf(env.h, "inreplace `%s` `%s` `%s`\n", file, pattern, target)
+
+		if env.hashOnly {
+			return starlark.None, nil
+		}
+	}
+
 	path := filepath.Join(env.buildDir, file)
 
 	data, err := ioutil.ReadFile(path)
@@ -205,6 +263,14 @@ func inreplaceReFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.T
 
 	env := thread.Local("install-env").(*installEnv)
 
+	if env.h != nil {
+		fmt.Fprintf(env.h, "inreplace `%s` `%s` `%s`\n", file, pattern, target)
+
+		if env.hashOnly {
+			return starlark.None, nil
+		}
+	}
+
 	path := filepath.Join(env.buildDir, file)
 
 	data, err := ioutil.ReadFile(path)
@@ -247,6 +313,14 @@ func rmrfFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 	}
 
 	env := thread.Local("install-env").(*installEnv)
+
+	if env.h != nil {
+		fmt.Fprintf(env.h, "rmrf `%s`\n", path)
+
+		if env.hashOnly {
+			return starlark.None, nil
+		}
+	}
 
 	err = os.RemoveAll(filepath.Join(env.buildDir, path))
 	if err != nil {
@@ -293,8 +367,6 @@ func appendEnvFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tup
 
 	prefix := key + "="
 
-	fmt.Printf("|> append_env: %s => %s", key, value)
-
 	for i, kv := range env.extraEnv {
 		if strings.HasPrefix(kv, prefix) {
 			env.extraEnv[i] += (string(filepath.ListSeparator) + value)
@@ -310,6 +382,8 @@ func appendEnvFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tup
 func linkFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var path starlark.Value
 	var target string
+
+	env := thread.Local("install-env").(*installEnv)
 
 	err := starlark.UnpackArgs(
 		"pkg", args, kwargs,
@@ -338,7 +412,15 @@ func linkFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 
 			target := filepath.Join(target, filepath.Base(epath))
 
-			fmt.Printf("linking %s from %s\n", target, epath)
+			env.L.Debug("symlinking", "old-path", epath, "new-path", target)
+
+			if env.h != nil {
+				fmt.Fprintf(env.h, "link `%s` `%s`\n", epath, target)
+
+				if env.hashOnly {
+					continue
+				}
+			}
 
 			os.MkdirAll(filepath.Dir(target), 0755)
 
@@ -349,7 +431,15 @@ func linkFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 		}
 	case starlark.String:
 		target := filepath.Join(target, filepath.Base(string(sv)))
-		fmt.Printf("linking %s from %s\n", target, sv)
+		env.L.Debug("symlinking", "old-path", string(sv), "new-path", target)
+
+		if env.h != nil {
+			fmt.Fprintf(env.h, "link `%s` `%s`\n", string(sv), target)
+
+			if env.hashOnly {
+				break
+			}
+		}
 
 		os.MkdirAll(filepath.Dir(target), 0755)
 

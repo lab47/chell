@@ -10,6 +10,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/evanphx/chell/pkg/builder"
 	"github.com/evanphx/chell/pkg/chell"
+	"github.com/evanphx/chell/pkg/installer"
 	"github.com/evanphx/chell/pkg/lang"
 	"github.com/evanphx/chell/pkg/ruby"
 	"github.com/hashicorp/go-hclog"
@@ -43,19 +44,61 @@ func main() {
 		opts, err = chell.DefaultInstallOptions()
 	}
 
-	// level := hclog.Info
+	opts.PackagePath = *fPackagePath
+
+	level := hclog.Info
 
 	if opts.Debug {
-		// level = hclog.Trace
+		level = hclog.Trace
 	}
 
 	L := hclog.New(&hclog.LoggerOptions{
 		Name:  "chell",
-		Level: hclog.Trace,
+		Level: level,
+	})
+
+	ctx := hclog.WithContext(context.Background(), L)
+
+	err = installer.Install(ctx, L, *fName, opts)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func oldmain() {
+	pflag.Parse()
+
+	var (
+		opts chell.InstallOptions
+		err  error
+	)
+
+	opts.Debug = *fDebug
+
+	root := *fRoot
+	if root != "" {
+		opts, err = chell.RootedInstallOptions(root)
+	} else {
+		opts, err = chell.DefaultInstallOptions()
+	}
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	level := hclog.Info
+
+	if opts.Debug {
+		level = hclog.Trace
+	}
+
+	L := hclog.New(&hclog.LoggerOptions{
+		Name:  "chell",
+		Level: level,
 	})
 
 	if *fBuild {
-		fn, err := lang.Locate(*fName, opts.StorePath, *fPackagePath)
+		fn, err := lang.Locate(L, *fName, opts.StorePath, *fPackagePath)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -158,16 +201,10 @@ func main() {
 
 			of.Close()
 
-			_, err = lang.Load(name, opts.StorePath, "")
+			_, err = lang.Load(L, name, opts.StorePath, "")
 			if err != nil {
 				log.Fatal(err)
 			}
-		}
-
-	} else {
-		err = chell.Install(L, *fName, opts)
-		if err != nil {
-			log.Fatal(err)
 		}
 	}
 }

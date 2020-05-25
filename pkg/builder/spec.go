@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/hashicorp/go-hclog"
 	archiver "github.com/mholt/archiver/v3"
 	"github.com/mr-tron/base58"
@@ -23,6 +22,7 @@ import (
 )
 
 type Spec struct {
+	StoreName    string
 	Name         string
 	Version      string
 	Source       string
@@ -49,44 +49,6 @@ type Env struct {
 func (s *Spec) Build(ctx context.Context, L hclog.Logger, env *Env, build func(string, string) ([]byte, error)) (string, error) {
 	var manifest Manifest
 
-	th, _ := blake2b.New(16, nil)
-
-	for _, pkgPath := range s.Dependencies {
-		err := func() error {
-			f, err := os.Open(filepath.Join(env.StoreDir, pkgPath, ".chell-manifest.json"))
-			if err != nil {
-				return err
-			}
-
-			defer f.Close()
-
-			var man Manifest
-
-			err = json.NewDecoder(f).Decode(&man)
-			if err != nil {
-				f.Close()
-				return err
-			}
-
-			L.Trace("contributing dependency hash", "path", pkgPath, "hash", man.Hash)
-
-			h, err := base58.Decode(man.Hash)
-			if err != nil {
-				return err
-			}
-
-			th.Write(h)
-			return nil
-		}()
-
-		if err != nil {
-			return "", err
-		}
-	}
-
-	fmt.Fprintln(th, s.Name)
-	fmt.Fprintln(th, s.Version)
-
 	buildDir := filepath.Join(env.BuildDir, "build")
 
 	if _, err := os.Stat(buildDir); err == nil {
@@ -104,6 +66,8 @@ func (s *Spec) Build(ctx context.Context, L hclog.Logger, env *Env, build func(s
 
 		spath := filepath.Join(env.BuildDir, source)
 
+		var sourceInput *Input
+
 		if _, err := os.Stat(spath); err == nil {
 			L.Trace("reusing existing source", "source", source)
 			f, err := os.Open(spath)
@@ -115,15 +79,12 @@ func (s *Spec) Build(ctx context.Context, L hclog.Logger, env *Env, build func(s
 
 			io.Copy(h, f)
 
-			manifest.Inputs = append(manifest.Inputs, &Input{
+			sourceInput = &Input{
 				Name: s.Source,
 				Hash: base58.Encode(h.Sum(nil)),
-			})
-
-			th.Write(h.Sum(nil))
+			}
 		} else {
-
-			L.Trace("downloading source", "url", s.Source)
+			L.Info("downloading source", "url", s.Source)
 
 			resp, err := http.Get(s.Source)
 			if err != nil {
@@ -143,13 +104,15 @@ func (s *Spec) Build(ctx context.Context, L hclog.Logger, env *Env, build func(s
 				return "", err
 			}
 
-			manifest.Inputs = append(manifest.Inputs, &Input{
+			sourceInput = &Input{
 				Name: s.Source,
 				Hash: base58.Encode(h.Sum(nil)),
-			})
-
-			th.Write(h.Sum(nil))
+			}
 		}
+
+		manifest.Inputs = append(manifest.Inputs, sourceInput)
+
+		L.Info("source procured", "hash", sourceInput.Hash)
 
 		L.Trace("unpacking source", "dir", buildDir)
 
@@ -162,8 +125,6 @@ func (s *Spec) Build(ctx context.Context, L hclog.Logger, env *Env, build func(s
 		if !ok {
 			return "", fmt.Errorf("unknown source compression format")
 		}
-
-		spew.Dump(spath, f)
 
 		err = ua.Unarchive(spath, buildDir)
 		if err != nil {
@@ -189,9 +150,9 @@ func (s *Spec) Build(ctx context.Context, L hclog.Logger, env *Env, build func(s
 		return "", fmt.Errorf("no directory found after unarchiving")
 	}
 
-	manifest.Hash = base58.Encode(th.Sum(nil))
+	storeName := s.StoreName
 
-	storeName := fmt.Sprintf("%s-%s-%s", manifest.Hash, s.Name, s.Version)
+	manifest.Hash = s.StoreName
 
 	installDir, err := filepath.Abs(filepath.Join(env.StoreDir, storeName))
 	if err != nil {

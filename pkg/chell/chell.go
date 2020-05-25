@@ -470,11 +470,12 @@ func (f *Forest) Add(L hclog.Logger, pkg *InstalledPackage) error {
 const CoreTap = "/usr/local/Homebrew/Library/Taps/homebrew/homebrew-core/Formula"
 
 type InstallOptions struct {
-	Debug      bool
-	CachePath  string
-	StorePath  string
-	ForestPath string
-	TempPath   string
+	Debug       bool
+	CachePath   string
+	StorePath   string
+	ForestPath  string
+	TempPath    string
+	PackagePath string
 }
 
 func DefaultInstallOptions() (InstallOptions, error) {
@@ -497,11 +498,12 @@ func RootedInstallOptions(root string) (InstallOptions, error) {
 	opts.StorePath = filepath.Join(root, "store")
 	opts.ForestPath = filepath.Join(root, "forest")
 	opts.TempPath = filepath.Join(root, "tmp")
+	opts.PackagePath = filepath.Join(root, "packages")
 
 	return opts, nil
 }
 
-func Install(L hclog.Logger, name string, opts InstallOptions) error {
+func RubyInstall(L hclog.Logger, name string, opts InstallOptions) error {
 	path := filepath.Join(CoreTap, name+".rb")
 
 	if _, err := os.Stat(path); err != nil {

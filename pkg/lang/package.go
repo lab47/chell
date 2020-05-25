@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"hash"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/evanphx/chell/pkg/builder"
@@ -13,6 +15,7 @@ import (
 	"github.com/evanphx/chell/pkg/resolver"
 	"github.com/hashicorp/go-hclog"
 	"github.com/mitchellh/hashstructure"
+	"github.com/mr-tron/base58"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
 	"golang.org/x/crypto/blake2b"
@@ -29,6 +32,8 @@ type Function struct {
 	buildDir   string
 
 	Dependencies []*Function
+
+	hash []byte
 }
 
 func Translate(pkg *chell.Package) (*Function, error) {
@@ -62,8 +67,15 @@ func Translate(pkg *chell.Package) (*Function, error) {
 }
 
 type installEnv struct {
+	L hclog.Logger
+
 	installDir, buildDir, storeDir string
 	extraEnv                       []string
+
+	h        hash.Hash
+	hashOnly bool
+
+	outputPrefix string
 }
 
 type PackageValue struct {
@@ -109,21 +121,19 @@ func (p *PackageValue) Hash() (uint32, error) {
 	return uint32(h), nil
 }
 
-func Locate(path, storeDir, pkgPath string) (*Function, error) {
+func Locate(L hclog.Logger, path, storeDir, pkgPath string) (*Function, error) {
 	for _, dir := range filepath.SplitList(pkgPath) {
 		tp := filepath.Join(dir, path) + ".chell"
 
-		fmt.Printf("checking %s\n", tp)
-
 		if _, err := os.Stat(tp); err == nil {
-			return Load(tp, storeDir, pkgPath)
+			return Load(L, tp, storeDir, pkgPath)
 		}
 	}
 
 	return nil, fmt.Errorf("unable to locate package definition: %s", path)
 }
 
-func Load(path, storeDir, pkgPath string) (*Function, error) {
+func Load(L hclog.Logger, path, storeDir, pkgPath string) (*Function, error) {
 	vars := makeFuncs()
 
 	isPD := vars.Has
@@ -138,6 +148,7 @@ func Load(path, storeDir, pkgPath string) (*Function, error) {
 	var thread starlark.Thread
 
 	thread.SetLocal("install-env", &installEnv{
+		L:        L,
 		storeDir: storeDir,
 	})
 
@@ -164,7 +175,7 @@ func Load(path, storeDir, pkgPath string) (*Function, error) {
 	}
 
 	for _, dep := range fn.Package.Deps.Runtime {
-		sub, err := Locate(dep, storeDir, pkgPath)
+		sub, err := Locate(L, dep, storeDir, pkgPath)
 		if err != nil {
 			return nil, err
 		}
@@ -173,6 +184,100 @@ func Load(path, storeDir, pkgPath string) (*Function, error) {
 	}
 
 	return fn, nil
+}
+
+const FakePath = "/non-existant"
+
+func (f *Function) HashInstall(ctx context.Context) ([]byte, error) {
+	if f.hash != nil {
+		return f.hash, nil
+	}
+
+	h, _ := blake2b.New(16, nil)
+
+	// hash the dependencies sorted
+
+	var (
+		depKeys []string
+	)
+
+	deps := map[string]*Function{}
+	for _, dep := range f.Dependencies {
+		depKeys = append(depKeys, dep.Package.Name)
+		deps[dep.Package.Name] = dep
+	}
+
+	sort.Strings(depKeys)
+
+	pkgs := starlark.StringDict{}
+
+	for _, k := range depKeys {
+		dep := deps[k]
+
+		dh, err := dep.HashInstall(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		fmt.Fprintf(h, "dep:%s", k)
+		h.Write(dh)
+
+		name, err := dep.StoreName(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		pkgs[k] = starlark.String(filepath.Join(FakePath, name))
+	}
+
+	fmt.Fprintln(h, "host-path=/bin:/usr/bin")
+
+	var thread starlark.Thread
+
+	L := hclog.FromContext(ctx)
+
+	thread.SetLocal("install-env", &installEnv{
+		L:        L,
+		buildDir: FakePath,
+		storeDir: FakePath,
+		h:        h,
+		hashOnly: true,
+	})
+
+	ictx := starlarkstruct.FromStringDict(starlarkstruct.Default, starlark.StringDict{
+		"prefix":  starlark.String("/tmp"),
+		"build":   starlark.String(FakePath),
+		"pkgs":    starlarkstruct.FromStringDict(starlarkstruct.Default, pkgs),
+		"head_eh": starlark.False,
+	})
+
+	args := starlark.Tuple{ictx}
+
+	_, err := starlark.Call(&thread, f.install, args, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	f.hash = h.Sum(nil)
+
+	return f.hash, nil
+}
+
+func (f *Function) StoreName(ctx context.Context) (string, error) {
+	ih, err := f.HashInstall(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	h, _ := blake2b.New(16, nil)
+
+	fmt.Fprintln(h, f.Package.Name)
+	fmt.Fprintln(h, f.Package.Version)
+	fmt.Fprintln(h, f.Package.Sha256)
+
+	h.Write(ih)
+
+	return fmt.Sprintf("%s-%s-%s", base58.Encode(h.Sum(nil)), f.Package.Name, f.Package.Version), nil
 }
 
 func (f *Function) Install(ctx context.Context, L hclog.Logger, buildDir, storeDir string) (string, error) {
@@ -189,10 +294,16 @@ func (f *Function) Install(ctx context.Context, L hclog.Logger, buildDir, storeD
 	var res resolver.Resolver
 	res.StorePath = storeDir
 
+	storeName, err := f.StoreName(ctx)
+	if err != nil {
+		return "", err
+	}
+
 	spec := &builder.Spec{
-		Name:    f.Package.Name,
-		Version: f.Package.Version,
-		Source:  f.Package.Source,
+		StoreName: storeName,
+		Name:      f.Package.Name,
+		Version:   f.Package.Version,
+		Source:    f.Package.Source,
 	}
 
 	pkgs := starlark.StringDict{}
@@ -215,9 +326,6 @@ func (f *Function) Install(ctx context.Context, L hclog.Logger, buildDir, storeD
 		StoreDir: storeDir,
 	}
 
-	h, _ := blake2b.New(16, nil)
-	fmt.Fprintln(h, f.Code)
-
 	var (
 		pathParts []string
 		buildEnv  []string
@@ -233,11 +341,16 @@ func (f *Function) Install(ctx context.Context, L hclog.Logger, buildDir, storeD
 	fn := func(buildDir, installDir string) ([]byte, error) {
 		var thread starlark.Thread
 
+		h, _ := blake2b.New(16, nil)
+
 		thread.SetLocal("install-env", &installEnv{
-			buildDir:   buildDir,
-			installDir: installDir,
-			storeDir:   storeDir,
-			extraEnv:   append(buildEnv, "HOME=/nonexistant", "PATH="+path),
+			L:            L,
+			buildDir:     buildDir,
+			installDir:   installDir,
+			storeDir:     storeDir,
+			extraEnv:     append(buildEnv, "HOME=/nonexistant", "PATH="+path),
+			h:            h,
+			outputPrefix: f.Package.Name,
 		})
 
 		thread.SetLocal("resolver", res)
@@ -257,7 +370,7 @@ func (f *Function) Install(ctx context.Context, L hclog.Logger, buildDir, storeD
 
 			_, err := starlark.Call(&thread, dep.hook, args, nil)
 			if err != nil {
-				return nil, err
+				return h.Sum(nil), err
 			}
 		}
 
@@ -270,8 +383,9 @@ func (f *Function) Install(ctx context.Context, L hclog.Logger, buildDir, storeD
 
 		args := starlark.Tuple{ictx}
 
+		L.Info("building package", "name", f.Package.Name, "version", f.Package.Version, "store-name", storeName)
 		_, err := starlark.Call(&thread, f.install, args, nil)
-		return h.Sum(nil), err
+		return nil, err
 	}
 
 	storePath, err := spec.Build(ctx, L, env, fn)
