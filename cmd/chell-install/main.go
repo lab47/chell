@@ -6,8 +6,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/davecgh/go-spew/spew"
+	"github.com/evanphx/chell/pkg/archive"
 	"github.com/evanphx/chell/pkg/builder"
 	"github.com/evanphx/chell/pkg/chell"
 	"github.com/evanphx/chell/pkg/installer"
@@ -18,11 +20,13 @@ import (
 )
 
 var (
-	fName  = pflag.StringP("install", "i", "", "package to install")
-	fRoot  = pflag.String("root", "", "use this directory as the chell root dir")
-	fDebug = pflag.Bool("debug", false, "show debugging information")
-	fTrans = pflag.Bool("translate", false, "only show the package translation")
-	fBuild = pflag.Bool("build", false, "do a build")
+	fName    = pflag.StringP("install", "i", "", "package to install")
+	fRoot    = pflag.String("root", "", "use this directory as the chell root dir")
+	fDebug   = pflag.Bool("debug", false, "show debugging information")
+	fTrans   = pflag.Bool("translate", false, "only show the package translation")
+	fBuild   = pflag.Bool("build", false, "do a build")
+	fArchive = pflag.String("archive", "", "archive a dir")
+	fPack    = pflag.Bool("pack", false, "pack the store into car files")
 
 	fPackagePath = pflag.String("pkg", ".:./packages", "pathes to search for package definitions")
 )
@@ -56,6 +60,26 @@ func main() {
 		Name:  "chell",
 		Level: level,
 	})
+
+	if *fArchive != "" {
+		sp, err := filepath.Abs(opts.StorePath)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		ar, err := archive.NewArchiver(sp)
+		err = ar.ArchiveFromPath(os.Stdout, *fArchive)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		fmt.Fprintf(os.Stderr, "dependencies: %s\n", strings.Join(ar.Dependencies(), ", "))
+
+		return
+	}
+
+	if *fPack {
+	}
 
 	ctx := hclog.WithContext(context.Background(), L)
 
