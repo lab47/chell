@@ -1,17 +1,24 @@
 package lang
 
 import (
+	"archive/tar"
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/evanphx/chell/pkg/chell"
+	"github.com/evanphx/chell/pkg/fileutils"
 	"github.com/evanphx/chell/pkg/resolver"
+	"github.com/mholt/archiver/v3"
 	"go.starlark.net/starlark"
 )
 
@@ -53,6 +60,8 @@ func pkgFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kw
 	return pkg, nil
 }
 
+var ErrExpectedString = errors.New("expected string value")
+
 func systemFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	env := thread.Local("install-env").(*installEnv)
 
@@ -64,6 +73,20 @@ func systemFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple,
 			segments = append(segments, string(sv))
 		default:
 			segments = append(segments, arg.String())
+		}
+	}
+
+	var dir string
+
+	for _, item := range kwargs {
+		name, arg := item[0].(starlark.String), item[1]
+		if name == "dir" {
+			s, ok := arg.(starlark.String)
+			if !ok {
+				return starlark.None, ErrExpectedString
+			}
+
+			dir = string(s)
 		}
 	}
 
@@ -91,7 +114,11 @@ func systemFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple,
 	}
 
 	cmd.Env = env.extraEnv
-	cmd.Dir = env.buildDir
+	if dir == "" {
+		cmd.Dir = env.buildDir
+	} else {
+		cmd.Dir = filepath.Join(env.buildDir, dir)
+	}
 
 	go func() {
 		br := bufio.NewReader(or)
@@ -379,6 +406,35 @@ func appendEnvFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tup
 	return starlark.None, nil
 }
 
+func prependEnvFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var key, value string
+
+	err := starlark.UnpackArgs(
+		"pkg", args, kwargs,
+		"key", &key,
+		"value", &value,
+	)
+
+	if err != nil {
+		return starlark.None, err
+	}
+
+	env := thread.Local("install-env").(*installEnv)
+
+	prefix := key + "="
+
+	for i, kv := range env.extraEnv {
+		if strings.HasPrefix(kv, prefix) {
+			env.extraEnv[i] = value + string(filepath.ListSeparator) + env.extraEnv[i]
+			return starlark.None, nil
+		}
+	}
+
+	env.extraEnv = append(env.extraEnv, key+"="+value)
+
+	return starlark.None, nil
+}
+
 func linkFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var path starlark.Value
 	var target string
@@ -452,16 +508,241 @@ func linkFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 	return starlark.None, nil
 }
 
+func writeNewFile(fpath string, in io.Reader, fm os.FileMode) error {
+	err := os.MkdirAll(filepath.Dir(fpath), 0755)
+	if err != nil {
+		return fmt.Errorf("%s: making directory for file: %v", fpath, err)
+	}
+
+	out, err := os.Create(fpath)
+	if err != nil {
+		return fmt.Errorf("%s: creating new file: %v", fpath, err)
+	}
+	defer out.Close()
+
+	err = out.Chmod(fm)
+	if err != nil && runtime.GOOS != "windows" {
+		return fmt.Errorf("%s: changing file mode: %v", fpath, err)
+	}
+
+	_, err = io.Copy(out, in)
+	if err != nil {
+		return fmt.Errorf("%s: writing file: %v", fpath, err)
+	}
+	return nil
+}
+
+func writeNewSymbolicLink(fpath string, target string) error {
+	err := os.MkdirAll(filepath.Dir(fpath), 0755)
+	if err != nil {
+		return fmt.Errorf("%s: making directory for file: %v", fpath, err)
+	}
+
+	_, err = os.Lstat(fpath)
+	if err == nil {
+		err = os.Remove(fpath)
+		if err != nil {
+			return fmt.Errorf("%s: failed to unlink: %+v", fpath, err)
+		}
+	}
+
+	err = os.Symlink(target, fpath)
+	if err != nil {
+		return fmt.Errorf("%s: making symbolic link for: %v", fpath, err)
+	}
+	return nil
+}
+
+func writeNewHardLink(fpath string, target string) error {
+	err := os.MkdirAll(filepath.Dir(fpath), 0755)
+	if err != nil {
+		return fmt.Errorf("%s: making directory for file: %v", fpath, err)
+	}
+
+	_, err = os.Lstat(fpath)
+	if err == nil {
+		err = os.Remove(fpath)
+		if err != nil {
+			return fmt.Errorf("%s: failed to unlink: %+v", fpath, err)
+		}
+	}
+
+	err = os.Link(target, fpath)
+	if err != nil {
+		return fmt.Errorf("%s: making hard link for: %v", fpath, err)
+	}
+	return nil
+}
+
+func unpackFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var path, sha256, target string
+
+	err := starlark.UnpackArgs(
+		"pkg", args, kwargs,
+		"path", &path,
+		"sha256", &sha256,
+		"target", &target,
+	)
+
+	if err != nil {
+		return starlark.None, err
+	}
+
+	env := thread.Local("install-env").(*installEnv)
+
+	if env.h != nil {
+		fmt.Fprintf(env.h, "unpack:%s/%s", path, sha256)
+
+		if env.hashOnly {
+			return starlark.None, nil
+		}
+	}
+
+	spath := filepath.Join(env.buildDir, filepath.Base(path))
+
+	env.L.Debug("downloading for unpack", "url", path, "target", spath)
+
+	resp, err := http.Get(path)
+	if err != nil {
+		return starlark.None, err
+	}
+
+	defer resp.Body.Close()
+
+	f, err := os.Create(spath)
+	if err != nil {
+		return starlark.None, err
+	}
+
+	io.Copy(f, resp.Body)
+
+	ar, err := archiver.ByExtension(spath)
+	if err != nil {
+		return starlark.None, err
+	}
+
+	ua, ok := ar.(archiver.Walker)
+	if !ok {
+		return starlark.None, fmt.Errorf("unknown source compression format")
+	}
+
+	target = filepath.Join(env.buildDir, target)
+
+	if _, err := os.Stat(target); err != nil {
+		err = os.MkdirAll(target, 0755)
+		if err != nil {
+			return starlark.None, err
+		}
+	}
+
+	err = ua.Walk(spath, func(f archiver.File) error {
+		hdr, ok := f.Header.(*tar.Header)
+		if !ok {
+			return fmt.Errorf("expected header to be *tar.Header but was %T", f.Header)
+		}
+
+		name := hdr.Name
+
+		// strip the initial directory
+		idx := strings.IndexByte(name, '/')
+		if idx != -1 {
+			name = name[idx+1:]
+			if name == "" {
+				// toplevel, skip
+				return nil
+			}
+		} else if f.IsDir() {
+			// toplevel dir, skip
+			return nil
+		}
+
+		to := filepath.Join(target, name)
+
+		// do not overwrite existing files, if configured
+		if _, err := os.Stat(to); err == nil && !f.IsDir() {
+			return fmt.Errorf("file already exists: %s", to)
+		}
+
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			return os.Mkdir(to, f.Mode())
+		case tar.TypeReg, tar.TypeRegA, tar.TypeChar, tar.TypeBlock, tar.TypeFifo, tar.TypeGNUSparse:
+			return writeNewFile(to, f, f.Mode())
+		case tar.TypeSymlink:
+			return writeNewSymbolicLink(to, hdr.Linkname)
+		case tar.TypeLink:
+			return writeNewHardLink(to, filepath.Join(to, hdr.Linkname))
+		case tar.TypeXGlobalHeader:
+			return nil // ignore the pax global header from git-generated tarballs
+		default:
+			return fmt.Errorf("%s: unknown type flag: %c", hdr.Name, hdr.Typeflag)
+		}
+	})
+
+	if err != nil {
+		return starlark.None, err
+	}
+
+	return starlark.None, nil
+}
+
+func installFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var (
+		target, pattern string
+		symlink         bool
+	)
+
+	err := starlark.UnpackArgs(
+		"pkg", args, kwargs,
+		"target", &target,
+		"pattern", &pattern,
+		"symlink?", &symlink,
+	)
+
+	if err != nil {
+		return starlark.None, err
+	}
+
+	env := thread.Local("install-env").(*installEnv)
+
+	if env.h != nil {
+		fmt.Fprintf(env.h, "install:%s/%s/%v", target, pattern, symlink)
+
+		if env.hashOnly {
+			return starlark.None, nil
+		}
+	}
+
+	if !filepath.IsAbs(pattern) {
+		pattern = filepath.Join(env.buildDir, pattern)
+	}
+
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(env.installDir, target)
+	}
+
+	var inst fileutils.Install
+	inst.Dest = target
+	inst.Pattern = pattern
+	inst.Linked = symlink
+
+	return starlark.None, inst.Install()
+}
+
 func makeFuncs() starlark.StringDict {
 	return starlark.StringDict{
-		"system":       starlark.NewBuiltin("system", systemFn),
-		"pkg":          starlark.NewBuiltin("pkg", pkgFn),
-		"resolve":      starlark.NewBuiltin("resolve", resolveFn),
-		"inreplace":    starlark.NewBuiltin("inreplace", inreplaceFn),
-		"inreplace_re": starlark.NewBuiltin("inreplace_re", inreplaceReFn),
-		"rm_f":         starlark.NewBuiltin("rm_f", rmrfFn),
-		"set_env":      starlark.NewBuiltin("set_env", setEnvFn),
-		"append_env":   starlark.NewBuiltin("append_env", appendEnvFn),
-		"link":         starlark.NewBuiltin("link", linkFn),
+		"system":        starlark.NewBuiltin("system", systemFn),
+		"pkg":           starlark.NewBuiltin("pkg", pkgFn),
+		"resolve":       starlark.NewBuiltin("resolve", resolveFn),
+		"inreplace":     starlark.NewBuiltin("inreplace", inreplaceFn),
+		"inreplace_re":  starlark.NewBuiltin("inreplace_re", inreplaceReFn),
+		"rm_f":          starlark.NewBuiltin("rm_f", rmrfFn),
+		"rm_rf":         starlark.NewBuiltin("rm_rf", rmrfFn),
+		"set_env":       starlark.NewBuiltin("set_env", setEnvFn),
+		"append_env":    starlark.NewBuiltin("append_env", appendEnvFn),
+		"prepend_env":   starlark.NewBuiltin("prepend_env", prependEnvFn),
+		"link":          starlark.NewBuiltin("link", linkFn),
+		"unpack":        starlark.NewBuiltin("unpack", unpackFn),
+		"install_files": starlark.NewBuiltin("install_files", installFn),
 	}
 }

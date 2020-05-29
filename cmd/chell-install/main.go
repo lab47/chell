@@ -39,14 +39,14 @@ func main() {
 		err  error
 	)
 
-	opts.Debug = *fDebug
-
 	root := *fRoot
 	if root != "" {
 		opts, err = chell.RootedInstallOptions(root)
 	} else {
 		opts, err = chell.DefaultInstallOptions()
 	}
+
+	opts.Debug = *fDebug
 
 	opts.PackagePath = *fPackagePath
 

@@ -11,7 +11,7 @@ require (
 	github.com/oklog/ulid v1.3.1
 	github.com/pkg/errors v0.9.1
 	github.com/spf13/pflag v1.0.5
+	github.com/stretchr/testify v1.2.2
 	go.starlark.net v0.0.0-20200330013621-be5394c419b6
 	golang.org/x/crypto v0.0.0-20200510223506-06a226fb4e37
-	golang.org/x/text v0.3.0
 )
