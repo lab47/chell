@@ -14,10 +14,10 @@ import (
 	"github.com/evanphx/chell/pkg/chell"
 	"github.com/evanphx/chell/pkg/resolver"
 	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/exprcore/exprcore"
+	"github.com/lab47/exprcore/exprcorestruct"
 	"github.com/mitchellh/hashstructure"
 	"github.com/mr-tron/base58"
-	"go.starlark.net/starlark"
-	"go.starlark.net/starlarkstruct"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -25,8 +25,8 @@ type Function struct {
 	Code string
 
 	Package *chell.Package
-	install *starlark.Function
-	hook    *starlark.Function
+	install *exprcore.Function
+	hook    *exprcore.Function
 
 	installDir string
 	buildDir   string
@@ -81,6 +81,8 @@ type installEnv struct {
 type PackageValue struct {
 	chell.Package
 
+	install *exprcore.Function
+
 	frozen bool
 }
 
@@ -98,20 +100,20 @@ func (p *PackageValue) Type() string {
 // marked as frozen.  All subsequent mutations to the data
 // structure through this API will fail dynamically, making the
 // data structure immutable and safe for publishing to other
-// Starlark interpreters running concurrently.
+// exprcore interpreters running concurrently.
 func (p *PackageValue) Freeze() {
 	p.frozen = true
 }
 
 // Truth returns the truth value of an object.
-func (p *PackageValue) Truth() starlark.Bool {
-	return starlark.True
+func (p *PackageValue) Truth() exprcore.Bool {
+	return exprcore.True
 }
 
 // Hash returns a function of x such that Equals(x, y) => Hash(x) == Hash(y).
 // Hash may fail if the value's type is not hashable, or if the value
 // contains a non-hashable value. The hash is used only by dictionaries and
-// is not exposed to the Starlark program.
+// is not exposed to the exprcore program.
 func (p *PackageValue) Hash() (uint32, error) {
 	h, err := hashstructure.Hash(p, nil)
 	if err != nil {
@@ -138,14 +140,14 @@ func Load(L hclog.Logger, path, storeDir, pkgPath string) (*Function, error) {
 
 	isPD := vars.Has
 
-	_, prog, err := starlark.SourceProgram(path, nil, isPD)
+	_, prog, err := exprcore.SourceProgram(path, nil, isPD)
 	if err != nil {
 		return nil, err
 	}
 
 	fn := &Function{}
 
-	var thread starlark.Thread
+	var thread exprcore.Thread
 
 	thread.SetLocal("install-env", &installEnv{
 		L:        L,
@@ -166,11 +168,15 @@ func Load(L hclog.Logger, path, storeDir, pkgPath string) (*Function, error) {
 
 	fn.Package = &pkg.Package
 
-	if f, ok := glb["install"].(*starlark.Function); ok {
-		fn.install = f
+	if pkg.install != nil {
+		fn.install = pkg.install
+	} else {
+		if f, ok := glb["install"].(*exprcore.Function); ok {
+			fn.install = f
+		}
 	}
 
-	if f, ok := glb["hook"].(*starlark.Function); ok {
+	if f, ok := glb["hook"].(*exprcore.Function); ok {
 		fn.hook = f
 	}
 
@@ -209,7 +215,7 @@ func (f *Function) HashInstall(ctx context.Context) ([]byte, error) {
 
 	sort.Strings(depKeys)
 
-	pkgs := starlark.StringDict{}
+	pkgs := exprcore.StringDict{}
 
 	for _, k := range depKeys {
 		dep := deps[k]
@@ -227,12 +233,12 @@ func (f *Function) HashInstall(ctx context.Context) ([]byte, error) {
 			return nil, err
 		}
 
-		pkgs[k] = starlark.String(filepath.Join(FakePath, name))
+		pkgs[k] = exprcore.String(filepath.Join(FakePath, name))
 	}
 
 	fmt.Fprintln(h, "host-path=/bin:/usr/bin")
 
-	var thread starlark.Thread
+	var thread exprcore.Thread
 
 	L := hclog.FromContext(ctx)
 
@@ -244,16 +250,16 @@ func (f *Function) HashInstall(ctx context.Context) ([]byte, error) {
 		hashOnly: true,
 	})
 
-	ictx := starlarkstruct.FromStringDict(starlarkstruct.Default, starlark.StringDict{
-		"prefix":  starlark.String("/tmp"),
-		"build":   starlark.String(FakePath),
-		"pkgs":    starlarkstruct.FromStringDict(starlarkstruct.Default, pkgs),
-		"head_eh": starlark.False,
+	ictx := exprcorestruct.FromStringDict(exprcorestruct.Default, exprcore.StringDict{
+		"prefix":  exprcore.String("/tmp"),
+		"build":   exprcore.String(FakePath),
+		"pkgs":    exprcorestruct.FromStringDict(exprcorestruct.Default, pkgs),
+		"head_eh": exprcore.False,
 	})
 
-	args := starlark.Tuple{ictx}
+	args := exprcore.Tuple{ictx}
 
-	_, err := starlark.Call(&thread, f.install, args, nil)
+	_, err := exprcore.Call(&thread, f.install, args, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -306,7 +312,7 @@ func (f *Function) Install(ctx context.Context, L hclog.Logger, buildDir, storeD
 		Source:    f.Package.Source,
 	}
 
-	pkgs := starlark.StringDict{}
+	pkgs := exprcore.StringDict{}
 
 	for _, dep := range f.Package.Deps.Runtime {
 		sp, err := res.Resolve(dep)
@@ -316,7 +322,7 @@ func (f *Function) Install(ctx context.Context, L hclog.Logger, buildDir, storeD
 
 		spec.Dependencies = append(spec.Dependencies, sp)
 
-		pkgs[dep] = starlark.String(filepath.Join(storeDir, sp))
+		pkgs[dep] = exprcore.String(filepath.Join(storeDir, sp))
 	}
 
 	os.MkdirAll(buildDir, 0755)
@@ -339,7 +345,7 @@ func (f *Function) Install(ctx context.Context, L hclog.Logger, buildDir, storeD
 	path := strings.Join(pathParts, string(filepath.ListSeparator)) + ":/bin:/usr/bin"
 
 	fn := func(buildDir, installDir string) ([]byte, error) {
-		var thread starlark.Thread
+		var thread exprcore.Thread
 
 		h, _ := blake2b.New(16, nil)
 
@@ -361,30 +367,30 @@ func (f *Function) Install(ctx context.Context, L hclog.Logger, buildDir, storeD
 				continue
 			}
 
-			ictx := starlarkstruct.FromStringDict(starlarkstruct.Default, starlark.StringDict{
-				"prefix": starlark.String(filepath.Join(storeDir, spec.Dependencies[i])),
-				"build":  starlark.String(buildDir),
+			ictx := exprcorestruct.FromStringDict(exprcorestruct.Default, exprcore.StringDict{
+				"prefix": exprcore.String(filepath.Join(storeDir, spec.Dependencies[i])),
+				"build":  exprcore.String(buildDir),
 			})
 
-			args := starlark.Tuple{ictx}
+			args := exprcore.Tuple{ictx}
 
-			_, err := starlark.Call(&thread, dep.hook, args, nil)
+			_, err := exprcore.Call(&thread, dep.hook, args, nil)
 			if err != nil {
 				return h.Sum(nil), err
 			}
 		}
 
-		ictx := starlarkstruct.FromStringDict(starlarkstruct.Default, starlark.StringDict{
-			"prefix":  starlark.String(installDir),
-			"build":   starlark.String(buildDir),
-			"pkgs":    starlarkstruct.FromStringDict(starlarkstruct.Default, pkgs),
-			"head_eh": starlark.False,
+		ictx := exprcorestruct.FromStringDict(exprcorestruct.Default, exprcore.StringDict{
+			"prefix":  exprcore.String(installDir),
+			"build":   exprcore.String(buildDir),
+			"pkgs":    exprcorestruct.FromStringDict(exprcorestruct.Default, pkgs),
+			"head_eh": exprcore.False,
 		})
 
-		args := starlark.Tuple{ictx}
+		args := exprcore.Tuple{ictx}
 
 		L.Info("building package", "name", f.Package.Name, "version", f.Package.Version, "store-name", storeName)
-		_, err := starlark.Call(&thread, f.install, args, nil)
+		_, err := exprcore.Call(&thread, f.install, args, nil)
 		return nil, err
 	}
 

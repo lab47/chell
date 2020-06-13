@@ -18,21 +18,25 @@ import (
 	"github.com/evanphx/chell/pkg/chell"
 	"github.com/evanphx/chell/pkg/fileutils"
 	"github.com/evanphx/chell/pkg/resolver"
+	"github.com/lab47/exprcore/exprcore"
 	"github.com/mholt/archiver/v3"
-	"go.starlark.net/starlark"
 )
 
-func pkgFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var name, version, source, sha256 string
-	var deps *starlark.List
+func pkgFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+	var (
+		name, version, source, sha256 string
+		deps                          *exprcore.List
+		install                       *exprcore.Function
+	)
 
-	starlark.UnpackArgs(
+	exprcore.UnpackArgs(
 		"pkg", args, kwargs,
 		"name", &name,
 		"version", &version,
 		"source", &source,
 		"sha256", &sha256,
 		"dependencies", &deps,
+		"install", &install,
 	)
 
 	pkg := &PackageValue{
@@ -42,14 +46,15 @@ func pkgFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kw
 			Source:  source,
 			Sha256:  sha256,
 		},
+		install: install,
 	}
 
 	if deps != nil {
 		iter := deps.Iterate()
 		defer iter.Done()
-		var x starlark.Value
+		var x exprcore.Value
 		for iter.Next(&x) {
-			if str, ok := x.(starlark.String); ok {
+			if str, ok := x.(exprcore.String); ok {
 				pkg.Deps.Runtime = append(pkg.Deps.Runtime, string(str))
 			}
 		}
@@ -62,14 +67,14 @@ func pkgFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kw
 
 var ErrExpectedString = errors.New("expected string value")
 
-func systemFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func systemFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	env := thread.Local("install-env").(*installEnv)
 
 	var segments []string
 
 	for _, arg := range args {
 		switch sv := arg.(type) {
-		case starlark.String:
+		case exprcore.String:
 			segments = append(segments, string(sv))
 		default:
 			segments = append(segments, arg.String())
@@ -79,11 +84,11 @@ func systemFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple,
 	var dir string
 
 	for _, item := range kwargs {
-		name, arg := item[0].(starlark.String), item[1]
+		name, arg := item[0].(exprcore.String), item[1]
 		if name == "dir" {
-			s, ok := arg.(starlark.String)
+			s, ok := arg.(exprcore.String)
 			if !ok {
-				return starlark.None, ErrExpectedString
+				return exprcore.None, ErrExpectedString
 			}
 
 			dir = string(s)
@@ -99,18 +104,18 @@ func systemFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple,
 		fmt.Fprintln(env.h, strings.Join(env.extraEnv, ":"))
 
 		if env.hashOnly {
-			return starlark.None, nil
+			return exprcore.None, nil
 		}
 	}
 
 	cmd := exec.Command(segments[0], segments[1:]...)
 	or, err := cmd.StdoutPipe()
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 	er, err := cmd.StderrPipe()
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	cmd.Env = env.extraEnv
@@ -153,10 +158,10 @@ func systemFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple,
 		return nil, err
 	}
 
-	return starlark.None, nil
+	return exprcore.None, nil
 }
 
-func resolveFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func resolveFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	var res *resolver.Resolver
 
 	val := thread.Local("resolver")
@@ -175,7 +180,7 @@ func resolveFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple
 
 	var name string
 
-	starlark.UnpackArgs(
+	exprcore.UnpackArgs(
 		"pkg", args, kwargs,
 		"name", &name,
 	)
@@ -189,18 +194,18 @@ func resolveFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple
 		return nil, fmt.Errorf("unknown dependency: %s", name)
 	}
 
-	return starlark.String(path), nil
+	return exprcore.String(path), nil
 }
 
-func basicFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func basicFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	var name string
 
-	starlark.UnpackArgs(
+	exprcore.UnpackArgs(
 		"pkg", args, kwargs,
 		"name", &name,
 	)
 
-	return starlark.None, nil
+	return exprcore.None, nil
 }
 
 func checkPath(path string) error {
@@ -211,10 +216,10 @@ func checkPath(path string) error {
 	return nil
 }
 
-func inreplaceFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func inreplaceFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	var file, pattern, target string
 
-	err := starlark.UnpackArgs(
+	err := exprcore.UnpackArgs(
 		"inreplace", args, kwargs,
 		"file", &file,
 		"pattern", &pattern,
@@ -222,12 +227,12 @@ func inreplaceFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tup
 	)
 
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	err = checkPath(file)
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	rep := strings.NewReplacer(pattern, target)
@@ -238,7 +243,7 @@ func inreplaceFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tup
 		fmt.Fprintf(env.h, "inreplace `%s` `%s` `%s`\n", file, pattern, target)
 
 		if env.hashOnly {
-			return starlark.None, nil
+			return exprcore.None, nil
 		}
 	}
 
@@ -246,28 +251,28 @@ func inreplaceFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tup
 
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	f, err := os.Create(path)
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	defer f.Close()
 
 	_, err = rep.WriteString(f, string(data))
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
-	return starlark.None, nil
+	return exprcore.None, nil
 }
 
-func inreplaceReFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func inreplaceReFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	var file, pattern, target string
 
-	err := starlark.UnpackArgs(
+	err := exprcore.UnpackArgs(
 		"inreplace", args, kwargs,
 		"file", &file,
 		"pattern", &pattern,
@@ -275,17 +280,17 @@ func inreplaceReFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.T
 	)
 
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	err = checkPath(file)
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	env := thread.Local("install-env").(*installEnv)
@@ -294,7 +299,7 @@ func inreplaceReFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.T
 		fmt.Fprintf(env.h, "inreplace `%s` `%s` `%s`\n", file, pattern, target)
 
 		if env.hashOnly {
-			return starlark.None, nil
+			return exprcore.None, nil
 		}
 	}
 
@@ -302,12 +307,12 @@ func inreplaceReFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.T
 
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	f, err := os.Create(path)
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	defer f.Close()
@@ -316,27 +321,27 @@ func inreplaceReFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.T
 
 	_, err = f.Write(data)
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
-	return starlark.None, nil
+	return exprcore.None, nil
 }
 
-func rmrfFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func rmrfFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	var path string
 
-	err := starlark.UnpackArgs(
+	err := exprcore.UnpackArgs(
 		"pkg", args, kwargs,
 		"path", &path,
 	)
 
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	err = checkPath(path)
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	env := thread.Local("install-env").(*installEnv)
@@ -345,49 +350,49 @@ func rmrfFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 		fmt.Fprintf(env.h, "rmrf `%s`\n", path)
 
 		if env.hashOnly {
-			return starlark.None, nil
+			return exprcore.None, nil
 		}
 	}
 
 	err = os.RemoveAll(filepath.Join(env.buildDir, path))
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
-	return starlark.None, nil
+	return exprcore.None, nil
 }
 
-func setEnvFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func setEnvFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	var key, value string
 
-	err := starlark.UnpackArgs(
+	err := exprcore.UnpackArgs(
 		"pkg", args, kwargs,
 		"key", &key,
 		"value", &value,
 	)
 
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	env := thread.Local("install-env").(*installEnv)
 
 	env.extraEnv = append(env.extraEnv, key+"="+value)
 
-	return starlark.None, nil
+	return exprcore.None, nil
 }
 
-func appendEnvFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func appendEnvFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	var key, value string
 
-	err := starlark.UnpackArgs(
+	err := exprcore.UnpackArgs(
 		"pkg", args, kwargs,
 		"key", &key,
 		"value", &value,
 	)
 
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	env := thread.Local("install-env").(*installEnv)
@@ -397,26 +402,26 @@ func appendEnvFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tup
 	for i, kv := range env.extraEnv {
 		if strings.HasPrefix(kv, prefix) {
 			env.extraEnv[i] += (string(filepath.ListSeparator) + value)
-			return starlark.None, nil
+			return exprcore.None, nil
 		}
 	}
 
 	env.extraEnv = append(env.extraEnv, key+"="+value)
 
-	return starlark.None, nil
+	return exprcore.None, nil
 }
 
-func prependEnvFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func prependEnvFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	var key, value string
 
-	err := starlark.UnpackArgs(
+	err := exprcore.UnpackArgs(
 		"pkg", args, kwargs,
 		"key", &key,
 		"value", &value,
 	)
 
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	env := thread.Local("install-env").(*installEnv)
@@ -426,41 +431,41 @@ func prependEnvFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tu
 	for i, kv := range env.extraEnv {
 		if strings.HasPrefix(kv, prefix) {
 			env.extraEnv[i] = value + string(filepath.ListSeparator) + env.extraEnv[i]
-			return starlark.None, nil
+			return exprcore.None, nil
 		}
 	}
 
 	env.extraEnv = append(env.extraEnv, key+"="+value)
 
-	return starlark.None, nil
+	return exprcore.None, nil
 }
 
-func linkFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var path starlark.Value
+func linkFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+	var path exprcore.Value
 	var target string
 
 	env := thread.Local("install-env").(*installEnv)
 
-	err := starlark.UnpackArgs(
+	err := exprcore.UnpackArgs(
 		"pkg", args, kwargs,
 		"path", &path,
 		"target", &target,
 	)
 
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	switch sv := path.(type) {
-	case *starlark.List:
+	case *exprcore.List:
 		iter := sv.Iterate()
 		defer iter.Done()
 
-		var ele starlark.Value
+		var ele exprcore.Value
 		for iter.Next(&ele) {
 			var epath string
 
-			if str, ok := ele.(starlark.String); ok {
+			if str, ok := ele.(exprcore.String); ok {
 				epath = string(str)
 			} else {
 				epath = ele.String()
@@ -482,10 +487,10 @@ func linkFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 
 			err = os.Symlink(epath, target)
 			if err != nil {
-				return starlark.None, err
+				return exprcore.None, err
 			}
 		}
-	case starlark.String:
+	case exprcore.String:
 		target := filepath.Join(target, filepath.Base(string(sv)))
 		env.L.Debug("symlinking", "old-path", string(sv), "new-path", target)
 
@@ -501,11 +506,11 @@ func linkFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 
 		err = os.Symlink(string(sv), target)
 		if err != nil {
-			return starlark.None, err
+			return exprcore.None, err
 		}
 	}
 
-	return starlark.None, nil
+	return exprcore.None, nil
 }
 
 func writeNewFile(fpath string, in io.Reader, fm os.FileMode) error {
@@ -574,10 +579,10 @@ func writeNewHardLink(fpath string, target string) error {
 	return nil
 }
 
-func unpackFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func unpackFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	var path, sha256, target string
 
-	err := starlark.UnpackArgs(
+	err := exprcore.UnpackArgs(
 		"pkg", args, kwargs,
 		"path", &path,
 		"sha256", &sha256,
@@ -585,7 +590,7 @@ func unpackFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple,
 	)
 
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	env := thread.Local("install-env").(*installEnv)
@@ -594,7 +599,7 @@ func unpackFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple,
 		fmt.Fprintf(env.h, "unpack:%s/%s", path, sha256)
 
 		if env.hashOnly {
-			return starlark.None, nil
+			return exprcore.None, nil
 		}
 	}
 
@@ -604,26 +609,26 @@ func unpackFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple,
 
 	resp, err := http.Get(path)
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	defer resp.Body.Close()
 
 	f, err := os.Create(spath)
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	io.Copy(f, resp.Body)
 
 	ar, err := archiver.ByExtension(spath)
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	ua, ok := ar.(archiver.Walker)
 	if !ok {
-		return starlark.None, fmt.Errorf("unknown source compression format")
+		return exprcore.None, fmt.Errorf("unknown source compression format")
 	}
 
 	target = filepath.Join(env.buildDir, target)
@@ -631,7 +636,7 @@ func unpackFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple,
 	if _, err := os.Stat(target); err != nil {
 		err = os.MkdirAll(target, 0755)
 		if err != nil {
-			return starlark.None, err
+			return exprcore.None, err
 		}
 	}
 
@@ -680,19 +685,19 @@ func unpackFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple,
 	})
 
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
-	return starlark.None, nil
+	return exprcore.None, nil
 }
 
-func installFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func installFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	var (
 		target, pattern string
 		symlink         bool
 	)
 
-	err := starlark.UnpackArgs(
+	err := exprcore.UnpackArgs(
 		"pkg", args, kwargs,
 		"target", &target,
 		"pattern", &pattern,
@@ -700,7 +705,7 @@ func installFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple
 	)
 
 	if err != nil {
-		return starlark.None, err
+		return exprcore.None, err
 	}
 
 	env := thread.Local("install-env").(*installEnv)
@@ -709,7 +714,7 @@ func installFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple
 		fmt.Fprintf(env.h, "install:%s/%s/%v", target, pattern, symlink)
 
 		if env.hashOnly {
-			return starlark.None, nil
+			return exprcore.None, nil
 		}
 	}
 
@@ -726,23 +731,23 @@ func installFn(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple
 	inst.Pattern = pattern
 	inst.Linked = symlink
 
-	return starlark.None, inst.Install()
+	return exprcore.None, inst.Install()
 }
 
-func makeFuncs() starlark.StringDict {
-	return starlark.StringDict{
-		"system":        starlark.NewBuiltin("system", systemFn),
-		"pkg":           starlark.NewBuiltin("pkg", pkgFn),
-		"resolve":       starlark.NewBuiltin("resolve", resolveFn),
-		"inreplace":     starlark.NewBuiltin("inreplace", inreplaceFn),
-		"inreplace_re":  starlark.NewBuiltin("inreplace_re", inreplaceReFn),
-		"rm_f":          starlark.NewBuiltin("rm_f", rmrfFn),
-		"rm_rf":         starlark.NewBuiltin("rm_rf", rmrfFn),
-		"set_env":       starlark.NewBuiltin("set_env", setEnvFn),
-		"append_env":    starlark.NewBuiltin("append_env", appendEnvFn),
-		"prepend_env":   starlark.NewBuiltin("prepend_env", prependEnvFn),
-		"link":          starlark.NewBuiltin("link", linkFn),
-		"unpack":        starlark.NewBuiltin("unpack", unpackFn),
-		"install_files": starlark.NewBuiltin("install_files", installFn),
+func makeFuncs() exprcore.StringDict {
+	return exprcore.StringDict{
+		"system":        exprcore.NewBuiltin("system", systemFn),
+		"pkg":           exprcore.NewBuiltin("pkg", pkgFn),
+		"resolve":       exprcore.NewBuiltin("resolve", resolveFn),
+		"inreplace":     exprcore.NewBuiltin("inreplace", inreplaceFn),
+		"inreplace_re":  exprcore.NewBuiltin("inreplace_re", inreplaceReFn),
+		"rm_f":          exprcore.NewBuiltin("rm_f", rmrfFn),
+		"rm_rf":         exprcore.NewBuiltin("rm_rf", rmrfFn),
+		"set_env":       exprcore.NewBuiltin("set_env", setEnvFn),
+		"append_env":    exprcore.NewBuiltin("append_env", appendEnvFn),
+		"prepend_env":   exprcore.NewBuiltin("prepend_env", prependEnvFn),
+		"link":          exprcore.NewBuiltin("link", linkFn),
+		"unpack":        exprcore.NewBuiltin("unpack", unpackFn),
+		"install_files": exprcore.NewBuiltin("install_files", installFn),
 	}
 }
