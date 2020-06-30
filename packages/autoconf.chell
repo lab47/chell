@@ -1,23 +1,24 @@
 pkg(
-  name = "autoconf",
-  source = "https://ftp.gnu.org/gnu/autoconf/autoconf-2.69.tar.gz",
-  version = "2.69",
-  sha256 = "954bd69b391edc12d6a4a51a2dd1476543da5c6bbf05a95b59dc0dd6fd4c2969",
+  name: "autoconf"
+  source: "https://ftp.gnu.org/gnu/autoconf/autoconf-2.69.tar.gz"
+  version: "2.69"
+  sha256: "954bd69b391edc12d6a4a51a2dd1476543da5c6bbf05a95b59dc0dd6fd4c2969"
+
+  def install(ctx) {
+    set_env("PERL", "/usr/bin/perl")
+
+    # force autoreconf to look for and use our glibtoolize
+    inreplace("bin/autoreconf.in", "libtoolize", "glibtoolize")
+
+    # also touch the man page so that it isn't rebuilt
+    inreplace("man/autoreconf.1", "libtoolize", "glibtoolize")
+
+    system("./configure",
+      "--prefix=" + ctx.prefix,
+      "--with-lispdir=" + ctx.prefix + "/share/emacs/site-lisp/autoconf")
+
+    system("make", "install")
+
+    rm_f(ctx.prefix + "/share/info/standards.info")
+  }
 )
-
-def install(ctx):
-  set_env("PERL", "/usr/bin/perl")
-
-  # force autoreconf to look for and use our glibtoolize
-  inreplace("bin/autoreconf.in", "libtoolize", "glibtoolize")
-
-  # also touch the man page so that it isn't rebuilt
-  inreplace("man/autoreconf.1", "libtoolize", "glibtoolize")
-
-  system("./configure",
-    "--prefix=" + ctx.prefix,
-    "--with-lispdir=" + ctx.prefix + "/share/emacs/site-lisp/autoconf")
-
-  system("make", "install")
-
-  rm_f(ctx.prefix + "/share/info/standards.info")

@@ -238,31 +238,12 @@ func (f *Function) HashInstall(ctx context.Context) ([]byte, error) {
 
 	fmt.Fprintln(h, "host-path=/bin:/usr/bin")
 
-	var thread exprcore.Thread
-
-	L := hclog.FromContext(ctx)
-
-	thread.SetLocal("install-env", &installEnv{
-		L:        L,
-		buildDir: FakePath,
-		storeDir: FakePath,
-		h:        h,
-		hashOnly: true,
-	})
-
-	ictx := exprcorestruct.FromStringDict(exprcorestruct.Default, exprcore.StringDict{
-		"prefix":  exprcore.String("/tmp"),
-		"build":   exprcore.String(FakePath),
-		"pkgs":    exprcorestruct.FromStringDict(exprcorestruct.Default, pkgs),
-		"head_eh": exprcore.False,
-	})
-
-	args := exprcore.Tuple{ictx}
-
-	_, err := exprcore.Call(&thread, f.install, args, nil)
+	ih, err := f.install.HashCode()
 	if err != nil {
 		return nil, err
 	}
+
+	h.Write(ih)
 
 	f.hash = h.Sum(nil)
 
