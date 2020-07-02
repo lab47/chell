@@ -3,6 +3,7 @@ package lang
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"hash"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/evanphx/chell/pkg/builder"
 	"github.com/evanphx/chell/pkg/chell"
 	"github.com/evanphx/chell/pkg/resolver"
@@ -135,6 +137,72 @@ func Locate(L hclog.Logger, path, storeDir, pkgPath string) (*Function, error) {
 	return nil, fmt.Errorf("unable to locate package definition: %s", path)
 }
 
+var (
+	ErrNotString = errors.New("value not a string")
+	ErrNotFunc   = errors.New("value not a function")
+	ErrNotList   = errors.New("value not a list")
+)
+
+func stringValue(v exprcore.Value, err error) (string, error) {
+	if err != nil {
+		if _, ok := err.(exprcore.NoSuchAttrError); ok {
+			return "", nil
+		}
+		return "", err
+	}
+
+	if v == nil {
+		return "", nil
+	}
+
+	str, ok := v.(exprcore.String)
+	if !ok {
+		return "", ErrNotString
+	}
+
+	return string(str), nil
+}
+
+func funcValue(v exprcore.Value, err error) (*exprcore.Function, error) {
+	if err != nil {
+		if _, ok := err.(exprcore.NoSuchAttrError); ok {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if v == nil {
+		return nil, nil
+	}
+
+	fn, ok := v.(*exprcore.Function)
+	if !ok {
+		return nil, ErrNotFunc
+	}
+
+	return fn, nil
+}
+
+func listValue(v exprcore.Value, err error) (*exprcore.List, error) {
+	if err != nil {
+		if _, ok := err.(exprcore.NoSuchAttrError); ok {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if v == nil {
+		return nil, nil
+	}
+
+	list, ok := v.(*exprcore.List)
+	if !ok {
+		return nil, ErrNotList
+	}
+
+	return list, nil
+}
+
 func Load(L hclog.Logger, path, storeDir, pkgPath string) (*Function, error) {
 	vars := makeFuncs()
 
@@ -154,31 +222,67 @@ func Load(L hclog.Logger, path, storeDir, pkgPath string) (*Function, error) {
 		storeDir: storeDir,
 	})
 
-	glb, err := prog.Init(&thread, vars)
+	pkgobj := exprcore.FromStringDict(exprcore.Root, nil)
+
+	vars["pkg"] = pkgobj
+
+	_, pkgval, err := prog.Init(&thread, vars)
 	if err != nil {
 		return nil, err
 	}
 
-	vpkg := thread.Local("pkg")
-	if vpkg == nil {
-		return nil, fmt.Errorf("no pkg call made")
+	ppkg := pkgval.(*exprcore.Prototype)
+	spew.Dump(ppkg)
+
+	var pkg PackageValue
+
+	fn.install, err = funcValue(ppkg.Attr("install"))
+	if err != nil {
+		return nil, err
 	}
 
-	pkg := vpkg.(*PackageValue)
+	fn.hook, err = funcValue(ppkg.Attr("hook"))
+	if err != nil {
+		return nil, err
+	}
 
-	fn.Package = &pkg.Package
+	pkg.Name, err = stringValue(ppkg.Attr("name"))
+	if err != nil {
+		return nil, err
+	}
 
-	if pkg.install != nil {
-		fn.install = pkg.install
-	} else {
-		if f, ok := glb["install"].(*exprcore.Function); ok {
-			fn.install = f
+	pkg.Source, err = stringValue(ppkg.Attr("source"))
+	if err != nil {
+		return nil, err
+	}
+
+	pkg.Version, err = stringValue(ppkg.Attr("version"))
+	if err != nil {
+		return nil, err
+	}
+
+	pkg.Sha256, err = stringValue(ppkg.Attr("sha256"))
+	if err != nil {
+		return nil, err
+	}
+
+	deps, err := listValue(ppkg.Attr("dependencies"))
+	if err != nil {
+		return nil, err
+	}
+
+	if deps != nil {
+		iter := deps.Iterate()
+		defer iter.Done()
+		var x exprcore.Value
+		for iter.Next(&x) {
+			if str, ok := x.(exprcore.String); ok {
+				pkg.Deps.Runtime = append(pkg.Deps.Runtime, string(str))
+			}
 		}
 	}
 
-	if f, ok := glb["hook"].(*exprcore.Function); ok {
-		fn.hook = f
-	}
+	fn.Package = &pkg.Package
 
 	for _, dep := range fn.Package.Deps.Runtime {
 		sub, err := Locate(L, dep, storeDir, pkgPath)
