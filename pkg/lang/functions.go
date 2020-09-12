@@ -734,6 +734,43 @@ func installFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple
 	return exprcore.None, inst.Install()
 }
 
+func writeFileFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+	var (
+		target, data string
+	)
+
+	err := exprcore.UnpackArgs(
+		"write_file", args, kwargs,
+		"target", &target,
+		"data", &data,
+	)
+
+	if err != nil {
+		return exprcore.None, err
+	}
+
+	env := thread.Local("install-env").(*installEnv)
+
+	if env.hashOnly {
+		panic("nope")
+	}
+
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(env.installDir, target)
+	}
+
+	f, err := os.Create(target)
+	if err != nil {
+		return exprcore.None, err
+	}
+
+	defer f.Close()
+
+	_, err = f.WriteString(data)
+
+	return exprcore.None, err
+}
+
 func makeFuncs() exprcore.StringDict {
 	return exprcore.StringDict{
 		"system":        exprcore.NewBuiltin("system", systemFn),
@@ -749,5 +786,6 @@ func makeFuncs() exprcore.StringDict {
 		"link":          exprcore.NewBuiltin("link", linkFn),
 		"unpack":        exprcore.NewBuiltin("unpack", unpackFn),
 		"install_files": exprcore.NewBuiltin("install_files", installFn),
+		"write_file":    exprcore.NewBuiltin("write_file", writeFileFn),
 	}
 }
