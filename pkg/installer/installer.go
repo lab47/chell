@@ -11,8 +11,8 @@ import (
 	"strings"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/evanphx/chell/pkg/chell"
 	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/chell/pkg/chell"
 	"github.com/mholt/archiver/v3"
 )
 

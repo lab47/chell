@@ -5,11 +5,22 @@ import (
 )
 
 type DepDetect struct {
-	file string
+	file   string
+	prefix []byte
 
 	ar  *Archiver
 	buf *bytes.Buffer
+
+	state        int
+	restOfPrefix []byte
+	hashParts    []byte
 }
+
+const (
+	detectStart = iota
+	detectPrefix
+	detectHash
+)
 
 func (d *DepDetect) Write(b []byte) (int, error) {
 	d.findIn(b)
@@ -17,54 +28,50 @@ func (d *DepDetect) Write(b []byte) (int, error) {
 }
 
 func (d *DepDetect) findIn(src []byte) {
-	orig := src
+	prefix := d.prefix
 
-	sp := []byte(d.ar.StorePath)
-
-	if d.buf.Len() > 0 {
-		d.buf.Write(src)
-		src = d.buf.Bytes()
+	if d.state == detectPrefix {
+		prefix = d.restOfPrefix
 	}
 
-	for len(src) > 0 {
-		idx := bytes.Index(src, sp)
-		if idx == -1 {
-			break
-		}
+	for _, b := range src {
+		switch d.state {
+		case detectStart:
+			if prefix[0] == b {
+				prefix = prefix[1:]
+				d.buf.WriteByte(b)
 
-		// scan the bit right after the store path to find the hash seen
-		var hash string
+				d.state = detectPrefix
+			}
+		case detectPrefix:
+			if prefix[0] == b {
+				d.buf.WriteByte(b)
+				prefix = prefix[1:]
 
-		start := idx + len(sp) + 1
+				if len(prefix) == 0 {
+					d.state = detectHash
+					d.hashParts = nil
+					d.buf.Reset()
+				}
+			} else {
+				prefix = d.prefix
+				d.state = detectStart
+				d.buf.Reset()
+			}
+		case detectHash:
+			_, found := validHashChars[b]
+			if found {
+				d.buf.WriteByte(b)
+				d.hashParts = append(d.hashParts, b)
+			} else {
+				hash := string(d.hashParts)
+				d.ar.dependencies[hash] = struct{}{}
 
-		var j int
-
-		for j = start; j < len(src); j++ {
-			_, found := validHashChars[src[j]]
-			if !found {
-				hash = string(src[start:j])
-				break
+				d.state = detectPrefix
+				prefix = d.prefix
 			}
 		}
-
-		// partial
-		if j == len(src) {
-			break
-		}
-
-		d.ar.dependencies[hash] = struct{}{}
-
-		src = src[j:]
 	}
 
-	if len(orig) > 50 {
-		tail := orig[len(orig)-50:]
-		if bytes.IndexByte(tail, d.ar.StorePath[0]) != -1 {
-			d.buf.Write(tail)
-		} else {
-			d.buf.Reset()
-		}
-	} else {
-		d.buf.Reset()
-	}
+	d.restOfPrefix = prefix
 }

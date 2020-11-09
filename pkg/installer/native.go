@@ -8,10 +8,10 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/evanphx/chell/pkg/builder"
-	"github.com/evanphx/chell/pkg/chell"
-	"github.com/evanphx/chell/pkg/lang"
 	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/chell/pkg/builder"
+	"github.com/lab47/chell/pkg/chell"
+	"github.com/lab47/chell/pkg/lang"
 )
 
 func Install(ctx context.Context, L hclog.Logger, name string, opts chell.InstallOptions) error {

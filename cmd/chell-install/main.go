@@ -9,13 +9,13 @@ import (
 	"strings"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/evanphx/chell/pkg/archive"
-	"github.com/evanphx/chell/pkg/builder"
-	"github.com/evanphx/chell/pkg/chell"
-	"github.com/evanphx/chell/pkg/installer"
-	"github.com/evanphx/chell/pkg/lang"
-	"github.com/evanphx/chell/pkg/ruby"
 	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/chell/pkg/archive"
+	"github.com/lab47/chell/pkg/builder"
+	"github.com/lab47/chell/pkg/chell"
+	"github.com/lab47/chell/pkg/installer"
+	"github.com/lab47/chell/pkg/lang"
+	"github.com/lab47/chell/pkg/ruby"
 	"github.com/spf13/pflag"
 )
 

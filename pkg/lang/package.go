@@ -12,10 +12,10 @@ import (
 	"strings"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/evanphx/chell/pkg/builder"
-	"github.com/evanphx/chell/pkg/chell"
-	"github.com/evanphx/chell/pkg/resolver"
 	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/chell/pkg/builder"
+	"github.com/lab47/chell/pkg/chell"
+	"github.com/lab47/chell/pkg/resolver"
 	"github.com/lab47/exprcore/exprcore"
 	"github.com/lab47/exprcore/exprcorestruct"
 	"github.com/mitchellh/hashstructure"
@@ -68,7 +68,7 @@ func Translate(pkg *chell.Package) (*Function, error) {
 	return &f, nil
 }
 
-type installEnv struct {
+type InstallEnv struct {
 	L hclog.Logger
 
 	installDir, buildDir, storeDir string
@@ -143,7 +143,7 @@ var (
 	ErrNotList   = errors.New("value not a list")
 )
 
-func stringValue(v exprcore.Value, err error) (string, error) {
+func StringValue(v exprcore.Value, err error) (string, error) {
 	if err != nil {
 		if _, ok := err.(exprcore.NoSuchAttrError); ok {
 			return "", nil
@@ -163,7 +163,7 @@ func stringValue(v exprcore.Value, err error) (string, error) {
 	return string(str), nil
 }
 
-func funcValue(v exprcore.Value, err error) (*exprcore.Function, error) {
+func FuncValue(v exprcore.Value, err error) (*exprcore.Function, error) {
 	if err != nil {
 		if _, ok := err.(exprcore.NoSuchAttrError); ok {
 			return nil, nil
@@ -183,7 +183,7 @@ func funcValue(v exprcore.Value, err error) (*exprcore.Function, error) {
 	return fn, nil
 }
 
-func listValue(v exprcore.Value, err error) (*exprcore.List, error) {
+func ListValue(v exprcore.Value, err error) (*exprcore.List, error) {
 	if err != nil {
 		if _, ok := err.(exprcore.NoSuchAttrError); ok {
 			return nil, nil
@@ -217,7 +217,7 @@ func Load(L hclog.Logger, path, storeDir, pkgPath string) (*Function, error) {
 
 	var thread exprcore.Thread
 
-	thread.SetLocal("install-env", &installEnv{
+	thread.SetLocal("install-env", &InstallEnv{
 		L:        L,
 		storeDir: storeDir,
 	})
@@ -236,37 +236,37 @@ func Load(L hclog.Logger, path, storeDir, pkgPath string) (*Function, error) {
 
 	var pkg PackageValue
 
-	fn.install, err = funcValue(ppkg.Attr("install"))
+	fn.install, err = FuncValue(ppkg.Attr("install"))
 	if err != nil {
 		return nil, err
 	}
 
-	fn.hook, err = funcValue(ppkg.Attr("hook"))
+	fn.hook, err = FuncValue(ppkg.Attr("hook"))
 	if err != nil {
 		return nil, err
 	}
 
-	pkg.Name, err = stringValue(ppkg.Attr("name"))
+	pkg.Name, err = StringValue(ppkg.Attr("name"))
 	if err != nil {
 		return nil, err
 	}
 
-	pkg.Source, err = stringValue(ppkg.Attr("source"))
+	pkg.Source, err = StringValue(ppkg.Attr("source"))
 	if err != nil {
 		return nil, err
 	}
 
-	pkg.Version, err = stringValue(ppkg.Attr("version"))
+	pkg.Version, err = StringValue(ppkg.Attr("version"))
 	if err != nil {
 		return nil, err
 	}
 
-	pkg.Sha256, err = stringValue(ppkg.Attr("sha256"))
+	pkg.Sha256, err = StringValue(ppkg.Attr("sha256"))
 	if err != nil {
 		return nil, err
 	}
 
-	deps, err := listValue(ppkg.Attr("dependencies"))
+	deps, err := ListValue(ppkg.Attr("dependencies"))
 	if err != nil {
 		return nil, err
 	}
@@ -434,7 +434,7 @@ func (f *Function) Install(ctx context.Context, L hclog.Logger, buildDir, storeD
 
 		h, _ := blake2b.New(16, nil)
 
-		thread.SetLocal("install-env", &installEnv{
+		thread.SetLocal("install-env", &InstallEnv{
 			L:            L,
 			buildDir:     buildDir,
 			installDir:   installDir,

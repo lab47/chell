@@ -16,8 +16,8 @@ import (
 	"strings"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/evanphx/chell/pkg/ruby"
 	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/chell/pkg/ruby"
 	archiver "github.com/mholt/archiver/v3"
 	"github.com/oklog/ulid"
 )

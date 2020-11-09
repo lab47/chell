@@ -49,7 +49,12 @@ func (i *Install) Install() error {
 		if i.Linked {
 			i.L.Debug("symlink", "old", ent, "new", target)
 
-			err = os.Symlink(ent, target)
+			oldRel, err := filepath.Rel(filepath.Dir(target), ent)
+			if err != nil {
+				oldRel = ent
+			}
+
+			err = os.Symlink(oldRel, target)
 		} else {
 			err = i.copyEntry(ent, target)
 		}
@@ -95,9 +100,11 @@ func (i *Install) copyEntry(from, to string) error {
 
 		return nil
 	case os.ModeDir:
-		err = os.Mkdir(to, fi.Mode().Perm())
-		if err != nil {
-			return err
+		if _, err := os.Stat(to); err != nil {
+			err = os.Mkdir(to, fi.Mode().Perm())
+			if err != nil {
+				return err
+			}
 		}
 
 		for {

@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -12,7 +14,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
+	"github.com/lab47/chell/pkg/config"
+	"github.com/lab47/chell/pkg/verification"
+	"github.com/mr-tron/base58"
 	"github.com/pkg/errors"
+	"golang.org/x/crypto/blake2b"
 )
 
 // aperature sciences ops Package
@@ -20,16 +27,34 @@ const magic = "asoP"
 
 var ErrInvalidLink = errors.New("invalid link encountered")
 
+type CarInfo struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+
+	Repo string `json:"repo"`
+
+	Inputs map[string]string `json:"inputs"`
+
+	Signer    string `json:"signer"`
+	Signature string `json:"signature"`
+
+	Dependencies []string `json:"dependencies"`
+}
+
 type Archiver struct {
 	StorePath    string
+	info         *CarInfo
+	signer       config.EDSigner
 	dependencies map[string]struct{}
 }
 
-func NewArchiver(sp string) (*Archiver, error) {
-
+func NewArchiver(sp string, info *CarInfo, key config.EDSigner) (*Archiver, error) {
 	ar := &Archiver{
 		StorePath:    sp,
+		info:         info,
 		dependencies: make(map[string]struct{}),
+		signer:       key,
 	}
 
 	return ar, nil
@@ -84,7 +109,13 @@ func (ar *Archiver) extractDependencies(file string, src []byte) {
 	}
 }
 
-func (ar *Archiver) ArchiveFromPath(out io.Writer, path string) error {
+type nullSignOpts struct{}
+
+func (_ nullSignOpts) HashFunc() crypto.Hash {
+	return 0
+}
+
+func (ar *Archiver) ArchiveFromPath(out io.Writer, path, sig string) ([]byte, error) {
 	var files []string
 
 	filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
@@ -102,21 +133,25 @@ func (ar *Archiver) ArchiveFromPath(out io.Writer, path string) error {
 
 	sort.Strings(files)
 
-	gz := gzip.NewWriter(out)
+	h, _ := blake2b.New256(nil)
+
+	gz := gzip.NewWriter(io.MultiWriter(out, h))
 	gz.Extra = []byte(magic)
 	defer gz.Close()
 
-	tw := tar.NewWriter(out)
+	tw := tar.NewWriter(gz)
 	defer tw.Close()
 
 	var trbuf bytes.Buffer
+
+	dh, _ := blake2b.New256(nil)
 
 	for _, file := range files {
 		trbuf.Reset()
 
 		f, err := os.Open(file)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		err = func() error {
@@ -155,9 +190,15 @@ func (ar *Archiver) ArchiveFromPath(out io.Writer, path string) error {
 			hdr.ChangeTime = time.Time{}
 			hdr.ModTime = time.Time{}
 			hdr.Name = file[len(path)+1:]
-			hdr.Format = tar.FormatUSTAR
+			hdr.Format = tar.FormatPAX
 
-			tw.WriteHeader(hdr)
+			dh.Write([]byte(hdr.Name))
+			dh.Write([]byte{0})
+
+			err = tw.WriteHeader(hdr)
+			if err != nil {
+				return fmt.Errorf("error writing file header: %s: %w", hdr.Name, err)
+			}
 
 			if link != "" {
 				return nil
@@ -166,18 +207,78 @@ func (ar *Archiver) ArchiveFromPath(out io.Writer, path string) error {
 			var dr DepDetect
 			dr.ar = ar
 			dr.file = hdr.Name
+			dr.prefix = []byte(ar.StorePath + "/")
 			dr.buf = &trbuf
 
-			_, err = io.Copy(tw, io.TeeReader(f, &dr))
-			return err
+			_, err = io.Copy(io.MultiWriter(tw, dh, &dr), f)
+			if err != nil {
+				return fmt.Errorf("error writing file: %s: %w", hdr.Name, err)
+			}
+
+			return nil
 		}()
 
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	return nil
+	signature, err := ar.signer.Sign(nil, dh.Sum(nil), nullSignOpts{})
+	if err != nil {
+		return nil, err
+	}
+
+	ar.info.Signature = base58.Encode(signature)
+
+	deps, err := ar.ExpandDependencies(sig)
+	if err != nil {
+		return nil, err
+	}
+
+	ar.info.Dependencies = deps
+
+	var hdr tar.Header
+
+	hdr.Uid = 0
+	hdr.Gid = 0
+	hdr.Uname = ""
+	hdr.Gname = ""
+	hdr.AccessTime = time.Time{}
+	hdr.ChangeTime = time.Time{}
+	hdr.ModTime = time.Time{}
+	hdr.Name = ".car-info.json"
+	hdr.Format = tar.FormatPAX
+	hdr.Typeflag = tar.TypeReg
+	hdr.Mode = 0400
+
+	data, err := json.MarshalIndent(ar.info, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+
+	hdr.Size = int64(len(data))
+
+	err = tw.WriteHeader(&hdr)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = tw.Write(data)
+	if err != nil {
+		return nil, err
+	}
+
+	err = tw.Flush()
+	if err != nil {
+		return nil, errors.Wrapf(err, "tar writer flush")
+	}
+
+	err = gz.Flush()
+	if err != nil {
+		return nil, errors.Wrapf(err, "gzip flush")
+	}
+
+	return h.Sum(nil), nil
 }
 
 func (ar *Archiver) Dependencies() []string {
@@ -190,56 +291,144 @@ func (ar *Archiver) Dependencies() []string {
 	return out
 }
 
+func (ar *Archiver) ExpandDependencies(self string) ([]string, error) {
+	f, err := os.Open(ar.StorePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var deps []string
+
+	for {
+		names, err := f.Readdirnames(100)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+
+			return nil, err
+		}
+
+		if len(names) == 0 {
+			break
+		}
+
+		for _, name := range names {
+			if idx := strings.IndexByte(name, '-'); idx != -1 {
+				prefix := name[:idx]
+
+				if prefix == self {
+					continue
+				}
+
+				if _, ok := ar.dependencies[prefix]; ok {
+					fi, err := os.Stat(filepath.Join(ar.StorePath, name))
+					if err != nil {
+						return nil, err
+					}
+
+					if !fi.IsDir() {
+						continue
+					}
+
+					deps = append(deps, name)
+				}
+			}
+		}
+	}
+
+	sort.Strings(deps)
+
+	return deps, nil
+}
+
 var ErrInvalidFormat = errors.New("invalid format (bad magic)")
 
-func UnarchiveToDir(in io.Reader, path string) error {
-	gz, err := gzip.NewReader(in)
+func UnarchiveToDir(in io.Reader, path string) (*CarInfo, error) {
+	h, _ := blake2b.New256(nil)
+
+	gz, err := gzip.NewReader(io.TeeReader(in, h))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if string(gz.Extra) != magic {
-		return ErrInvalidFormat
+		return nil, ErrInvalidFormat
 	}
 
 	tr := tar.NewReader(gz)
 
+	var ci CarInfo
+
+	dh, _ := blake2b.New256(nil)
+
 	for {
 		hdr, err := tr.Next()
-		if err != io.EOF {
-			break
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+
+			return nil, err
 		}
 
+		if hdr.Name == ".car-info.json" {
+			err = json.NewDecoder(tr).Decode(&ci)
+			if err != nil {
+				return nil, err
+			}
+
+			spew.Dump(ci)
+
+			continue
+		}
+
+		dh.Write([]byte(hdr.Name))
+		dh.Write([]byte{0})
+
 		path := filepath.Join(path, hdr.Name)
-		dir := filepath.Base(path)
+		dir := filepath.Dir(path)
 
 		if _, err := os.Stat(dir); err != nil {
 			err = os.MkdirAll(dir, 0755)
 			if err != nil {
-				return err
+				return nil, err
 			}
 		}
 
 		switch hdr.Typeflag {
 		case tar.TypeReg:
-			f, err := os.Create(path)
+			mode := hdr.FileInfo().Mode()
+			f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
-			io.Copy(f, tr)
+			io.Copy(io.MultiWriter(f, dh), tr)
 
 			err = f.Close()
 			if err != nil {
-				return err
+				return nil, err
 			}
 		case tar.TypeSymlink:
 			err = os.Symlink(filepath.Join(path, hdr.Linkname), path)
 			if err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
 
-	return nil
+	var ver verification.Verifier
+
+	sig, err := base58.Decode(ci.Signature)
+	if err != nil {
+		return nil, err
+	}
+
+	err = ver.Verify(ci.Signer, sig, dh.Sum(nil))
+	if err != nil {
+		return nil, err
+	}
+
+	return &ci, nil
 }
