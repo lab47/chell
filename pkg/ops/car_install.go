@@ -2,8 +2,6 @@ package ops
 
 import (
 	"path/filepath"
-
-	"github.com/lab47/chell/pkg/archive"
 )
 
 type CarInstall struct {
@@ -11,32 +9,31 @@ type CarInstall struct {
 	Dir    string
 }
 
-func (c *CarInstall) Install(repo, name string) (*archive.CarInfo, error) {
-	cd, err := c.Lookup.Lookup(repo, name)
-	if err != nil {
-		return nil, err
+func (c *CarInstall) Install(set []*CarToInstall) error {
+	for _, car := range set {
+		err := c.installCar(car)
+		if err != nil {
+			return err
+		}
 	}
 
-	r, err := cd.Open()
+	return nil
+}
+
+func (c *CarInstall) installCar(car *CarToInstall) error {
+	r, err := car.Data.Open()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	defer r.Close()
 
 	var up CarUnpack
 
-	err = up.Install(r, filepath.Join(c.Dir, name))
+	err = up.Install(r, filepath.Join(c.Dir, car.ID))
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	for _, dep := range up.Info.Dependencies {
-		_, err = c.Install(dep.Repo, dep.ID)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return &up.Info, nil
+	return nil
 }
