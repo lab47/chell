@@ -33,10 +33,11 @@ import (
 )
 
 type Loader struct {
-	L    hclog.Logger
-	cfg  *config.Config
-	fns  exprcore.StringDict
-	repo repo.Repo
+	L           hclog.Logger
+	cfg         *config.Config
+	fns         exprcore.StringDict
+	repo        repo.Repo
+	constraints map[string]string
 
 	mu      sync.Mutex
 	scripts map[string]*Script
@@ -67,6 +68,10 @@ type Script struct {
 
 func (s *Script) RepoId() string {
 	return s.ent.RepoId()
+}
+
+func (s *Script) CarURL() string {
+	return s.ent.CarURL()
 }
 
 func (s *Script) PackageProto() *exprcore.Prototype {
@@ -201,6 +206,20 @@ func hashPath(ctx context.Context, path string) (string, []byte, error) {
 
 func (s *Script) calculateSignature() error {
 	h, _ := blake2b.New256(nil)
+
+	var keys []string
+
+	constraints := s.loader.cfg.Constraints()
+
+	for _, k := range constraints {
+		keys = append(keys, k)
+	}
+
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		fmt.Fprintf(h, "%s=%s\n", k, s.loader.constraints[k])
+	}
 
 	name, err := lang.StringValue(s.pkg.Attr("name"))
 	if err != nil {

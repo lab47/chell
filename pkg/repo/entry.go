@@ -1,6 +1,8 @@
 package repo
 
-import "github.com/lab47/chell/pkg/sumfile"
+import (
+	"github.com/lab47/chell/pkg/sumfile"
+)
 
 type Entry interface {
 	RepoId() string

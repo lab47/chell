@@ -34,6 +34,8 @@ type Installer struct {
 	signer   config.EDSigner
 
 	carInfos map[string]*archive.CarInfo
+
+	createdCars []string
 }
 
 func NewInstaller(rootDir string, signerId string, signer config.EDSigner) (*Installer, error) {
@@ -63,6 +65,10 @@ func NewInstaller(rootDir string, signerId string, signer config.EDSigner) (*Ins
 		signer:   signer,
 		carInfos: make(map[string]*archive.CarInfo),
 	}, nil
+}
+
+func (i *Installer) CreatedCars() []string {
+	return i.createdCars
 }
 
 func hashString(str string) string {
@@ -150,6 +156,57 @@ func (i *Installer) MakeAvailable(ctx context.Context, s *loader.Script, force b
 
 	_, err = i.Install(ctx, s)
 	return err
+}
+
+func (i *Installer) carURL(s *loader.Script) (string, string, error) {
+	return "", nil
+}
+
+func (i *Installer) InstallFromRemoteCAR(ctx context.Context, s *loader.Script) (*InstallInfo, error) {
+	url, name, err := i.carURL(s)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+
+	defer res.Body.Close()
+
+	h, _ := blake2b.New256(nil)
+
+	ci, err := archive.UnarchiveToDir(io.TeeReader(res.Body, h), filepath.Join(i.storeDir, name))
+	if err != nil {
+		return nil, err
+	}
+
+	spew.Dump(ci)
+
+	info := &InstallInfo{
+		Name: name,
+		// Dependencies: ci.Dependencies,
+		CarSize: res.ContentLength,
+		CarHash: base58.Encode(h.Sum(nil)),
+	}
+
+	iff, err := os.Create(filepath.Join(i.storeDir, name+".json"))
+	if err != nil {
+		return nil, err
+	}
+
+	ienc := json.NewEncoder(iff)
+	ienc.SetIndent("", "  ")
+
+	err = ienc.Encode(info)
+	if err != nil {
+		return nil, err
+	}
+
+	spew.Dump(info)
+
+	return info, nil
 }
 
 func (i *Installer) InstallFromLocalCAR(ctx context.Context, name string) (*InstallInfo, error) {
@@ -370,7 +427,9 @@ func (i *Installer) Install(ctx context.Context, s *loader.Script) (*InstallInfo
 		return nil, err
 	}
 
-	cf, err := os.Create(filepath.Join(i.carDir, name) + ".car-info.json")
+	carInfoPath := filepath.Join(i.carDir, name) + ".car-info.json"
+
+	cf, err := os.Create(carInfoPath)
 	if err != nil {
 		return nil, err
 	}
@@ -412,23 +471,28 @@ func (i *Installer) Install(ctx context.Context, s *loader.Script) (*InstallInfo
 		return nil, err
 	}
 
+	i.createdCars = append(i.createdCars, carPath, carInfoPath)
+
 	spew.Dump(cinfo)
 	spew.Dump(info)
 
 	return info, nil
 }
 
-func (i *Installer) convertDependencies(carDeps []string) ([]metadata.InstallDepedency, error) {
+func (i *Installer) convertDependencies(carDeps []*archive.CarDependency) ([]metadata.InstallDepedency, error) {
 	var ideps []metadata.InstallDepedency
 
-	for _, name := range carDeps {
-		ci, ok := i.carInfos[name]
+	for _, d := range carDeps {
+		ci, ok := i.carInfos[d.ID]
 		if !ok {
-			return nil, fmt.Errorf("missing car info: %s", name)
+			return nil, fmt.Errorf("missing car info: %s", d)
 		}
 
+		d.Repo = ci.Repo
+		d.Signer = ci.Signer
+
 		ideps = append(ideps, metadata.InstallDepedency{
-			Id:      name,
+			Id:      d.ID,
 			Name:    ci.Name,
 			Version: ci.Version,
 			Repo:    ci.Repo,

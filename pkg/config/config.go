@@ -10,6 +10,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -339,4 +340,19 @@ func (c *ConfigRepo) Config() (*metadata.RepoConfig, error) {
 	}
 
 	return nil, nil
+}
+
+func (c *Config) Constraints() map[string]string {
+	constrains := make(map[string]string)
+
+	arch := runtime.GOARCH
+
+	if s := os.Getenv("CHELL_ARCH"); s != "" {
+		arch = s
+	}
+
+	constrains["chell/arch"] = arch
+	constrains["chell/root"] = c.DataDir
+
+	return constrains
 }

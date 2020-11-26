@@ -3,7 +3,9 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/hashicorp/go-hclog"
@@ -26,11 +28,13 @@ var (
 
 var (
 	buildOnly bool
+	outputDir string
 	force     bool
 )
 
 func init() {
 	installCmd.PersistentFlags().BoolVarP(&buildOnly, "build-only", "B", false, "Build only")
+	installCmd.PersistentFlags().StringVarP(&outputDir, "output-dir", "d", ".", "Directory to write car files when building only")
 	installCmd.PersistentFlags().BoolVarP(&force, "force", "", false, "force the build")
 }
 
@@ -40,14 +44,6 @@ func install(c *cobra.Command, args []string) {
 		fmt.Printf("error loading config: %s\n", err)
 		os.Exit(1)
 	}
-
-	/*
-		dir, err := repo.NewDirectory("./packages")
-		if err != nil {
-			fmt.Printf("error opening repo: %s\n", err)
-			os.Exit(1)
-		}
-	*/
 
 	L := hclog.L()
 
@@ -86,6 +82,13 @@ func install(c *cobra.Command, args []string) {
 	}
 
 	if buildOnly {
+		for _, path := range inst.CreatedCars() {
+			err = copyFile(filepath.Join(outputDir, filepath.Base(path)), path)
+			if err != nil {
+				fmt.Printf("error copying car file '%s': %s\n", path, err)
+				os.Exit(1)
+			}
+		}
 		return
 	}
 
@@ -106,4 +109,24 @@ func install(c *cobra.Command, args []string) {
 		fmt.Printf("error installing into profile: %s\n", err)
 		os.Exit(1)
 	}
+}
+
+func copyFile(dest, src string) error {
+	s, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+
+	defer s.Close()
+
+	d, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+
+	defer d.Close()
+
+	io.Copy(d, s)
+
+	return nil
 }

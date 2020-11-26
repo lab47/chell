@@ -27,6 +27,12 @@ const magic = "asoP"
 
 var ErrInvalidLink = errors.New("invalid link encountered")
 
+type CarDependency struct {
+	ID     string `json:"id"`
+	Repo   string `json:"repo"`
+	Signer string `json:"signer"`
+}
+
 type CarInfo struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
@@ -39,7 +45,7 @@ type CarInfo struct {
 	Signer    string `json:"signer"`
 	Signature string `json:"signature"`
 
-	Dependencies []string `json:"dependencies"`
+	Dependencies []*CarDependency `json:"dependencies"`
 }
 
 type Archiver struct {
@@ -291,13 +297,13 @@ func (ar *Archiver) Dependencies() []string {
 	return out
 }
 
-func (ar *Archiver) ExpandDependencies(self string) ([]string, error) {
+func (ar *Archiver) ExpandDependencies(self string) ([]*CarDependency, error) {
 	f, err := os.Open(ar.StorePath)
 	if err != nil {
 		return nil, err
 	}
 
-	var deps []string
+	var deps []*CarDependency
 
 	for {
 		names, err := f.Readdirnames(100)
@@ -331,13 +337,15 @@ func (ar *Archiver) ExpandDependencies(self string) ([]string, error) {
 						continue
 					}
 
-					deps = append(deps, name)
+					deps = append(deps, &CarDependency{ID: name})
 				}
 			}
 		}
 	}
 
-	sort.Strings(deps)
+	sort.Slice(deps, func(i, j int) bool {
+		return deps[i].ID < deps[j].ID
+	})
 
 	return deps, nil
 }
@@ -383,9 +391,6 @@ func UnarchiveToDir(in io.Reader, path string) (*CarInfo, error) {
 			continue
 		}
 
-		dh.Write([]byte(hdr.Name))
-		dh.Write([]byte{0})
-
 		path := filepath.Join(path, hdr.Name)
 		dir := filepath.Dir(path)
 
@@ -396,8 +401,13 @@ func UnarchiveToDir(in io.Reader, path string) (*CarInfo, error) {
 			}
 		}
 
+		spew.Dump("hdr", hdr.Typeflag)
+
 		switch hdr.Typeflag {
 		case tar.TypeReg:
+			dh.Write([]byte(hdr.Name))
+			dh.Write([]byte{0})
+
 			mode := hdr.FileInfo().Mode()
 			f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 			if err != nil {
@@ -411,6 +421,13 @@ func UnarchiveToDir(in io.Reader, path string) (*CarInfo, error) {
 				return nil, err
 			}
 		case tar.TypeSymlink:
+			dh.Write([]byte(hdr.Name))
+			dh.Write([]byte{1})
+			fmt.Fprintf(dh, hdr.Linkname)
+			dh.Write([]byte{0})
+
+			spew.Dump("read", hdr.Name, hdr.Linkname, dh.Sum(nil))
+
 			err = os.Symlink(filepath.Join(path, hdr.Linkname), path)
 			if err != nil {
 				return nil, err
