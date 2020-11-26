@@ -1,6 +1,8 @@
 package ops
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 )
 
@@ -30,9 +32,16 @@ func (c *CarInstall) installCar(car *CarToInstall) error {
 
 	var up CarUnpack
 
-	err = up.Install(r, filepath.Join(c.Dir, car.ID))
+	tg := filepath.Join(c.Dir, car.ID)
+
+	err = up.Install(r, tg)
 	if err != nil {
 		return err
+	}
+
+	if up.Info.Signer != car.Signer {
+		os.RemoveAll(tg)
+		return fmt.Errorf("car signer not the same as indicated in the dependency entry: %s != %s", up.Info.Signer, car.Signer)
 	}
 
 	return nil

@@ -115,11 +115,13 @@ top:
 	}
 
 	if r.Info.Signer == "" || len(sig) == 0 {
+		os.RemoveAll(dir)
 		return ErrNoSignature
 	}
 
 	signer, err := base58.Decode(r.Info.Signer)
 	if err != nil {
+		os.RemoveAll(dir)
 		return err
 	}
 

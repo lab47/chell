@@ -7,10 +7,11 @@ type CarCalcSet struct {
 }
 
 type CarToInstall struct {
-	Repo string
-	ID   string
-	Info *archive.CarInfo
-	Data *CarData
+	Repo   string
+	ID     string
+	Signer string
+	Info   *archive.CarInfo
+	Data   *CarData
 }
 
 func (c *CarCalcSet) Calculate(repo, name string) ([]*CarToInstall, error) {
@@ -44,6 +45,10 @@ func (c *CarCalcSet) Calculate(repo, name string) ([]*CarToInstall, error) {
 		x.Data = cd
 		x.Info = info
 
+		if x.Signer == "" {
+			x.Signer = info.Signer
+		}
+
 		seen[x.ID] = struct{}{}
 
 		for _, dep := range x.Info.Dependencies {
@@ -52,8 +57,9 @@ func (c *CarCalcSet) Calculate(repo, name string) ([]*CarToInstall, error) {
 			}
 
 			toProcess = append(toProcess, &CarToInstall{
-				Repo: dep.Repo,
-				ID:   dep.ID,
+				Repo:   dep.Repo,
+				ID:     dep.ID,
+				Signer: dep.Signer,
 			})
 		}
 
