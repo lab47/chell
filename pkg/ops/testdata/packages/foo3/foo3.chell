@@ -1,0 +1,8 @@
+pkg(
+  name: "foo3",
+  version: "1.0",
+
+  def install(ctx) {
+
+  }
+)
