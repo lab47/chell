@@ -1,0 +1,9 @@
+pkg(
+  name: "p1",
+  version: "1.0",
+  input: file("p2.input"),
+
+  def install(ctx) {
+
+  }
+)

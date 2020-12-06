@@ -1,0 +1,11 @@
+import p1
+
+pkg(
+  name: "p1",
+  version: "1.0",
+  dependencies: [p1],
+
+  def install(ctx) {
+
+  }
+)

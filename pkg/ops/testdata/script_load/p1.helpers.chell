@@ -1,0 +1,10 @@
+def make(version) {
+  pkg(
+    name: "helpermade",
+    version: version,
+
+    def install(ctx) {
+
+    }
+  )
+}
