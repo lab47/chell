@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"path/filepath"
 	"runtime"
 
 	"github.com/lab47/exprcore/exprcore"
@@ -11,12 +12,16 @@ import (
 )
 
 type ScriptLoad struct {
+	StoreDir string
+
 	lookup *ScriptLookup
 
 	loaded map[string]*ScriptPackage
 }
 
 type ScriptPackage struct {
+	loader *ScriptLoad
+
 	id        string
 	prototype *exprcore.Prototype
 
@@ -64,9 +69,27 @@ func (s *ScriptPackage) ID() string {
 
 var ErrBadScript = errors.New("script error detected")
 
-func (s *ScriptLoad) Load(name string) (*ScriptPackage, error) {
+type Option func(c *loadCfg)
+
+type loadCfg struct {
+	args map[string]string
+}
+
+func WithArgs(args map[string]string) Option {
+	return func(c *loadCfg) {
+		c.args = args
+	}
+}
+
+func (s *ScriptLoad) Load(name string, opts ...Option) (*ScriptPackage, error) {
 	if s.loaded == nil {
 		s.loaded = make(map[string]*ScriptPackage)
+	}
+
+	var lc loadCfg
+
+	for _, o := range opts {
+		o(&lc)
 	}
 
 	sp, ok := s.loaded[name]
@@ -81,8 +104,15 @@ func (s *ScriptLoad) Load(name string) (*ScriptPackage, error) {
 
 	pkgobj := exprcore.FromStringDict(exprcore.Root, nil)
 
+	args := exprcore.NewDict(len(lc.args))
+
+	for k, v := range lc.args {
+		args.SetKey(exprcore.String(k), exprcore.String(v))
+	}
+
 	vars := exprcore.StringDict{
 		"pkg":    pkgobj,
+		"args":   args,
 		"file":   exprcore.NewBuiltin("file", s.fileFn),
 		"inputs": exprcore.NewBuiltin("inputs", s.inputsFn),
 	}
@@ -106,7 +136,9 @@ func (s *ScriptLoad) Load(name string) (*ScriptPackage, error) {
 		return nil, errors.Wrapf(ErrBadScript, "script did not return an object")
 	}
 
-	sp = &ScriptPackage{}
+	sp = &ScriptPackage{
+		loader: s,
+	}
 
 	id, err := sp.cs.Calculate(ppkg, data)
 	if err != nil {
@@ -228,13 +260,10 @@ func (l *ScriptLoad) loadHelpers(s *ScriptPackage, name string, data ScriptData,
 }
 
 func (s *ScriptPackage) Attr(name string) (exprcore.Value, error) {
-	/*
-		switch name {
-		case "prefix":
-			name := s.ID()
-			return exprcore.String(filepath.Join(s.loader.cfg.DataDir, "store", name)), nil
-		}
-	*/
+	switch name {
+	case "prefix":
+		return exprcore.String(filepath.Join(s.loader.StoreDir, s.ID())), nil
+	}
 
 	if s.helpers == nil {
 		return nil, nil

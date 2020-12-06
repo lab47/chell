@@ -1,0 +1,12 @@
+import ip2
+
+ip2.prefix
+
+pkg(
+  name: "ip1"
+  version: "1.0"
+
+  def install() {
+
+  }
+)

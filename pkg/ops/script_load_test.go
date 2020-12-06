@@ -54,6 +54,40 @@ func TestScriptLoad(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Regexp(t, ".*-helpermade-p3.0", pkg.ID())
+	})
 
+	t.Run("supports packages reporting their install prefix", func(t *testing.T) {
+		var (
+			load   ScriptLoad
+			lookup ScriptLookup
+		)
+
+		lookup.Path = []string{"./testdata/script_load"}
+
+		load.lookup = &lookup
+
+		pkg, err := load.Load("ip1")
+		require.NoError(t, err)
+
+		assert.Regexp(t, ".*-ip1-1.0", pkg.ID())
+	})
+
+	t.Run("supports passing named arguments to a package", func(t *testing.T) {
+		var (
+			load   ScriptLoad
+			lookup ScriptLookup
+		)
+
+		lookup.Path = []string{"./testdata/script_load"}
+
+		load.lookup = &lookup
+
+		pkg, err := load.Load("v1", WithArgs(map[string]string{
+			"version": "2.7.7",
+		}))
+
+		require.NoError(t, err)
+
+		assert.Regexp(t, ".*-v1-2.7.7", pkg.ID())
 	})
 }
