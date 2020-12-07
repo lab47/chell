@@ -6,6 +6,8 @@ import (
 	"io"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strings"
 
 	"github.com/lab47/exprcore/exprcore"
 	"github.com/pkg/errors"
@@ -17,6 +19,28 @@ type ScriptLoad struct {
 	lookup *ScriptLookup
 
 	loaded map[string]*ScriptPackage
+}
+
+func loadedKey(name string, args map[string]string) string {
+	var keys []string
+
+	for k := range args {
+		keys = append(keys, k)
+	}
+
+	sort.Strings(keys)
+
+	var sb strings.Builder
+	sb.WriteString(name)
+	sb.WriteByte('-')
+
+	for _, k := range keys {
+		sb.WriteString(k)
+		sb.WriteByte('=')
+		sb.WriteString(args[k])
+	}
+
+	return sb.String()
 }
 
 type ScriptPackage struct {
@@ -92,7 +116,9 @@ func (s *ScriptLoad) Load(name string, opts ...Option) (*ScriptPackage, error) {
 		o(&lc)
 	}
 
-	sp, ok := s.loaded[name]
+	cacheKey := loadedKey(name, lc.args)
+
+	sp, ok := s.loaded[cacheKey]
 	if ok {
 		return sp, nil
 	}
