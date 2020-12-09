@@ -47,6 +47,7 @@ type ScriptPackage struct {
 	loader *ScriptLoad
 
 	id        string
+	repo      string
 	prototype *exprcore.Prototype
 
 	cs ScriptCalcSig
@@ -89,6 +90,16 @@ func (s *ScriptPackage) Hash() (uint32, error) {
 
 func (s *ScriptPackage) ID() string {
 	return s.id
+}
+
+func (s *ScriptPackage) Repo() string {
+	return s.repo
+}
+
+// Dependencies returns any ScriptPackages that this one depends on, as
+// declared via the dependencies keyword.
+func (s *ScriptPackage) Dependencies() []*ScriptPackage {
+	return s.cs.Dependencies
 }
 
 var ErrBadScript = errors.New("script error detected")

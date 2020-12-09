@@ -12,7 +12,10 @@ import (
 
 	"github.com/lab47/chell/pkg/archive"
 	"github.com/lab47/chell/pkg/metadata"
+	"github.com/pkg/errors"
 )
+
+var NoCarData = errors.New("no car data found")
 
 type httpDo interface {
 	Do(req *http.Request) (*http.Response, error)
@@ -93,6 +96,10 @@ func (c *CarLookup) checkVanity(repo, name string) (*CarData, error) {
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, err
+	}
+
+	if resp.StatusCode == 404 {
+		return nil, nil
 	}
 
 	if resp.StatusCode != 200 {

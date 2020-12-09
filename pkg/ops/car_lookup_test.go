@@ -40,6 +40,10 @@ type testClient struct {
 
 func (t *testClient) Do(req *http.Request) (*http.Response, error) {
 	t.req = append(t.req, req)
+	if len(t.resp) == 0 {
+		return &http.Response{StatusCode: 404}, nil
+	}
+
 	resp := t.resp[0]
 	t.resp = t.resp[1:]
 	return resp, nil
