@@ -108,7 +108,51 @@ func TestPackageCalcInstall(t *testing.T) {
 		require.NotNil(t, p1)
 
 		assert.Equal(t, []string{pkg.ID(), p1.ID()}, toInstall.PackageIDs)
+	})
 
+	t.Run("computes the install order", func(t *testing.T) {
+		var lookup ScriptLookup
+		lookup.Path = []string{"./testdata/package_calc_install"}
+
+		var sl ScriptLoad
+		sl.lookup = &lookup
+
+		pkg, err := sl.Load("p2")
+		require.NoError(t, err)
+
+		var pci PackageCalcInstall
+
+		toInstall, err := pci.Calculate(pkg)
+		require.NoError(t, err)
+
+		p1 := sl.loaded["p1"]
+		require.NotNil(t, p1)
+
+		assert.Equal(t, []string{p1.ID(), pkg.ID()}, toInstall.InstallOrder)
+	})
+
+	t.Run("computes the install order when deps seen multiple times", func(t *testing.T) {
+		var lookup ScriptLookup
+		lookup.Path = []string{"./testdata/package_calc_install"}
+
+		var sl ScriptLoad
+		sl.lookup = &lookup
+
+		pkg, err := sl.Load("p4")
+		require.NoError(t, err)
+
+		var pci PackageCalcInstall
+
+		toInstall, err := pci.Calculate(pkg)
+		require.NoError(t, err)
+
+		p1 := sl.loaded["p1"]
+		require.NotNil(t, p1)
+
+		p2 := sl.loaded["p2"]
+		require.NotNil(t, p2)
+
+		assert.Equal(t, []string{p1.ID(), p2.ID(), pkg.ID()}, toInstall.InstallOrder)
 	})
 
 	t.Run("includes declared dependencies recursively", func(t *testing.T) {
@@ -191,7 +235,7 @@ func TestPackageCalcInstall(t *testing.T) {
 		p2 := sl.loaded["p2"]
 		require.NotNil(t, p2)
 
-		assert.Equal(t, []string{pkg.ID(), p1.ID(), p2.ID()}, toInstall.PackageIDs)
+		assert.Equal(t, []string{pkg.ID(), p2.ID(), p1.ID()}, toInstall.PackageIDs)
 	})
 
 	t.Run("generates a script installer value", func(t *testing.T) {

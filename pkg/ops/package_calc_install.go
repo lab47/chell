@@ -39,8 +39,10 @@ func (i *InstallCar) Install(ctx context.Context) error {
 }
 
 type PackagesToInstall struct {
-	PackageIDs []string
-	Installers map[string]PackageInstaller
+	PackageIDs   []string
+	InstallOrder []string
+	Installers   map[string]PackageInstaller
+	Dependencies map[string][]string
 }
 
 func (p *PackageCalcInstall) isInstalled(id string) (bool, error) {
@@ -65,7 +67,7 @@ func (p *PackageCalcInstall) isInstalled(id string) (bool, error) {
 func (p *PackageCalcInstall) consider(
 	pkg *ScriptPackage,
 	pti *PackagesToInstall,
-	seen map[string]struct{},
+	seen map[string]int,
 ) error {
 	installed, err := p.isInstalled(pkg.ID())
 	if err != nil {
@@ -102,11 +104,14 @@ func (p *PackageCalcInstall) consider(
 				}
 
 				for _, cdep := range carInfo.Dependencies {
+					pti.Dependencies[pkg.ID()] = append(pti.Dependencies[pkg.ID()], cdep.ID)
+
 					if _, ok := seen[cdep.ID]; ok {
+						seen[cdep.ID]++
 						continue
 					}
 
-					seen[cdep.ID] = struct{}{}
+					seen[cdep.ID] = 1
 
 					err = p.considerCarDep(cdep, pti, seen)
 					if err != nil {
@@ -121,11 +126,14 @@ func (p *PackageCalcInstall) consider(
 	pti.Installers[pkg.ID()] = &InstallFunction{pkg}
 
 	for _, dep := range pkg.Dependencies() {
+		pti.Dependencies[pkg.ID()] = append(pti.Dependencies[pkg.ID()], dep.ID())
+
 		if _, ok := seen[dep.ID()]; ok {
+			seen[dep.ID()]++
 			continue
 		}
 
-		seen[dep.ID()] = struct{}{}
+		seen[dep.ID()] = 1
 
 		err = p.consider(dep, pti, seen)
 		if err != nil {
@@ -137,11 +145,11 @@ func (p *PackageCalcInstall) consider(
 }
 
 func (p *PackageCalcInstall) considerCarDep(
-	cdep *archive.CarDependency,
+	car *archive.CarDependency,
 	pti *PackagesToInstall,
-	seen map[string]struct{},
+	seen map[string]int,
 ) error {
-	installed, err := p.isInstalled(cdep.ID)
+	installed, err := p.isInstalled(car.ID)
 	if err != nil {
 		return err
 	}
@@ -150,32 +158,35 @@ func (p *PackageCalcInstall) considerCarDep(
 		return nil
 	}
 
-	pti.PackageIDs = append(pti.PackageIDs, cdep.ID)
+	pti.PackageIDs = append(pti.PackageIDs, car.ID)
 
-	carData, err := p.carLookup.Lookup(cdep.Repo, cdep.ID)
+	carData, err := p.carLookup.Lookup(car.Repo, car.ID)
 	if err != nil {
 		return err
 	}
 
 	if carData == nil {
-		return fmt.Errorf("cars can only depend on other cars, but missing: %s/%s", cdep.Repo, cdep.ID)
+		return fmt.Errorf("cars can only depend on other cars, but missing: %s/%s", car.Repo, car.ID)
 	}
 
-	pti.Installers[cdep.ID] = &InstallCar{
+	pti.Installers[car.ID] = &InstallCar{
 		data: carData,
 	}
 
 	carInfo, err := carData.Info()
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "fetching car info: %s/%s", car.Repo, car.ID)
 	}
 
 	for _, cdep := range carInfo.Dependencies {
+		pti.Dependencies[car.ID] = append(pti.Dependencies[car.ID], cdep.ID)
+
 		if _, ok := seen[cdep.ID]; ok {
+			seen[cdep.ID]++
 			continue
 		}
 
-		seen[cdep.ID] = struct{}{}
+		seen[cdep.ID] = 1
 
 		err = p.considerCarDep(cdep, pti, seen)
 		if err != nil {
@@ -189,12 +200,49 @@ func (p *PackageCalcInstall) considerCarDep(
 func (p *PackageCalcInstall) Calculate(pkg *ScriptPackage) (*PackagesToInstall, error) {
 	var pti PackagesToInstall
 	pti.Installers = make(map[string]PackageInstaller)
+	pti.Dependencies = make(map[string][]string)
 
-	seen := map[string]struct{}{}
+	seen := map[string]int{
+		pkg.ID(): 0,
+	}
 
 	err := p.consider(pkg, &pti, seen)
 	if err != nil {
 		return nil, err
+	}
+
+	var toCheck []string
+
+	for id, deg := range seen {
+		if deg == 0 {
+			toCheck = append(toCheck, id)
+		}
+	}
+
+	visited := 0
+
+	var toInstall []string
+
+	for len(toCheck) > 0 {
+		x := toCheck[len(toCheck)-1]
+		toCheck = toCheck[:len(toCheck)-1]
+
+		toInstall = append(toInstall, x)
+
+		visited++
+
+		for _, dep := range pti.Dependencies[x] {
+			deg := seen[dep] - 1
+			seen[dep] = deg
+
+			if deg == 0 {
+				toCheck = append(toCheck, dep)
+			}
+		}
+	}
+
+	for i := len(toInstall) - 1; i >= 0; i-- {
+		pti.InstallOrder = append(pti.InstallOrder, toInstall[i])
 	}
 
 	return &pti, nil

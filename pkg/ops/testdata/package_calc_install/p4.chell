@@ -3,7 +3,7 @@ import p2, p1
 pkg(
   name: "p4"
   version: "1.0"
-  dependencies: [p1, p2]
+  dependencies: [p2, p1]
 
   def install(ctx) {
 
