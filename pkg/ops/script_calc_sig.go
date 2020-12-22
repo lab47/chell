@@ -3,6 +3,8 @@ package ops
 import (
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"sort"
 
 	"github.com/lab47/chell/pkg/lang"
@@ -20,6 +22,7 @@ type ScriptCalcSig struct {
 	Name         string
 	Version      string
 	Install      *exprcore.Function
+	Hook         *exprcore.Function
 	Inputs       []ScriptInput
 	Dependencies []*ScriptPackage
 }
@@ -65,6 +68,13 @@ func (s *ScriptCalcSig) extract(proto *exprcore.Prototype) error {
 	}
 
 	s.Install = install
+
+	hook, err := lang.FuncValue(proto.Attr("hook"))
+	if err != nil {
+		return err
+	}
+
+	s.Hook = hook
 
 	deps, err := lang.ListValue(proto.Attr("dependencies"))
 	if err != nil {
@@ -129,18 +139,31 @@ func (s *ScriptCalcSig) processInput(val exprcore.Value) error {
 	return nil
 }
 
-func (s *ScriptCalcSig) calcSig(proto *exprcore.Prototype, data ScriptData) (string, error) {
+func (s *ScriptCalcSig) calcSig(
+	proto *exprcore.Prototype,
+	data ScriptData,
+	constraints map[string]string,
+) (string, error) {
 	if s.Name == "" {
 		err := s.extract(proto)
 		if err != nil {
 			return "", err
 		}
 	}
-
 	h, _ := blake2b.New256(nil)
 	fmt.Fprintf(h, "name: %s\n", s.Name)
 
 	fmt.Fprintf(h, "version: %s\n", s.Version)
+
+	var keys []string
+
+	for k := range constraints {
+		keys = append(keys, k)
+	}
+
+	for _, k := range keys {
+		fmt.Fprintf(h, "constraint %s = %s\n", k, constraints[k])
+	}
 
 	if s.Inputs != nil {
 		err := s.injectInputs(h, data)
@@ -175,7 +198,7 @@ func (s *ScriptCalcSig) calcSig(proto *exprcore.Prototype, data ScriptData) (str
 
 func (s *ScriptCalcSig) injectInputs(w io.Writer, data ScriptData) error {
 	for _, i := range s.Inputs {
-		algo, h, ok := s.hashPath(i.Data.path, data)
+		algo, h, ok := s.hashPath(i.Data, data)
 		if !ok {
 			return fmt.Errorf("missing sum for input: %s", i.Data.path)
 		}
@@ -190,24 +213,59 @@ func (s *ScriptCalcSig) injectInputs(w io.Writer, data ScriptData) error {
 	return nil
 }
 
-func (s *ScriptCalcSig) hashPath(path string, data ScriptData) (string, []byte, bool) {
-	h, _ := blake2b.New256(nil)
+func (s *ScriptCalcSig) hashPath(sf *ScriptFile, data ScriptData) (string, []byte, bool) {
+	path := sf.path
 
-	ad, err := data.Asset(path)
-	if err != nil {
-		return "", nil, false
+	if kt, kv, ok := sf.Sum(); ok {
+		return kt, kv, true
 	}
 
-	_, err = h.Write(ad)
-	if err != nil {
-		return "", nil, false
+	h, _ := blake2b.New256(nil)
+
+	u, err := url.Parse(path)
+	if err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+		resp, err := http.Head(path)
+		if err != nil {
+			return "", nil, false
+		}
+
+		defer resp.Body.Close()
+
+		if etag := resp.Header.Get("Etag"); etag != "" && etag[0] == '"' {
+			return "etag", []byte(etag), true
+		}
+
+		resp, err = http.Get(path)
+		if err != nil {
+			return "", nil, false
+		}
+
+		defer resp.Body.Close()
+
+		io.Copy(h, resp.Body)
+	} else {
+		ad, err := data.Asset(path)
+		if err != nil {
+			return "", nil, false
+		}
+
+		_, err = h.Write(ad)
+		if err != nil {
+			return "", nil, false
+		}
 	}
 
 	return "b2", h.Sum(nil), true
 }
 
-func (s *ScriptCalcSig) Calculate(proto *exprcore.Prototype, data ScriptData) (string, error) {
-	sig, err := s.calcSig(proto, data)
+var times int
+
+func (s *ScriptCalcSig) Calculate(
+	proto *exprcore.Prototype,
+	data ScriptData,
+	constraints map[string]string,
+) (string, error) {
+	sig, err := s.calcSig(proto, data, constraints)
 	if err != nil {
 		return "", err
 	}

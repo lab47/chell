@@ -1,6 +1,6 @@
 package ops
 
-import "github.com/lab47/chell/pkg/archive"
+import "github.com/lab47/chell/pkg/data"
 
 type CarCalcSet struct {
 	Lookup *CarLookup
@@ -10,7 +10,7 @@ type CarToInstall struct {
 	Repo   string
 	ID     string
 	Signer string
-	Info   *archive.CarInfo
+	Info   *data.CarInfo
 	Data   *CarData
 }
 

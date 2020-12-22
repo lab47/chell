@@ -3,12 +3,14 @@ module github.com/lab47/chell
 go 1.14
 
 require (
+	github.com/aws/aws-sdk-go v1.15.78
 	github.com/davecgh/go-spew v1.1.1
 	github.com/go-git/go-git/v5 v5.2.0
 	github.com/hashicorp/go-getter v1.5.0
 	github.com/hashicorp/go-hclog v0.13.0
 	github.com/ipfs/go-ipfs v0.7.0
 	github.com/lab47/exprcore v0.0.0-20200613041620-1564c8223b52
+	github.com/mholt/archiver v3.1.1+incompatible
 	github.com/mholt/archiver/v3 v3.3.0
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/mitchellh/hashstructure v1.0.0

@@ -79,7 +79,7 @@ func (s *ScriptLookup) loadDir(dir, name string) (ScriptData, error) {
 	for _, x := range possibles {
 		data, err := ioutil.ReadFile(x.path)
 		if err == nil {
-			return &dirScriptData{data: data, dir: dir}, nil
+			return &dirScriptData{data: data, dir: x.dir}, nil
 		}
 	}
 

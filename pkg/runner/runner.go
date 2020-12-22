@@ -159,7 +159,7 @@ func (i *Installer) MakeAvailable(ctx context.Context, s *loader.Script, force b
 }
 
 func (i *Installer) carURL(s *loader.Script) (string, string, error) {
-	return "", nil
+	return "", "", nil
 }
 
 func (i *Installer) InstallFromRemoteCAR(ctx context.Context, s *loader.Script) (*InstallInfo, error) {

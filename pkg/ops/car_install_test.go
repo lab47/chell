@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/lab47/chell/pkg/archive"
+	"github.com/lab47/chell/pkg/data"
 	"github.com/mr-tron/base58"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,7 +49,7 @@ func TestCarInstall(t *testing.T) {
 
 		var (
 			cp    CarPack
-			cinfo archive.CarInfo
+			cinfo data.CarInfo
 		)
 
 		cp.PrivateKey = priv
@@ -77,7 +77,7 @@ func TestCarInstall(t *testing.T) {
 
 		var (
 			cp2    CarPack
-			cinfo2 archive.CarInfo
+			cinfo2 data.CarInfo
 		)
 
 		cp2.PrivateKey = priv
@@ -143,7 +143,7 @@ func TestCarInstall(t *testing.T) {
 
 		var (
 			cp    CarPack
-			cinfo archive.CarInfo
+			cinfo data.CarInfo
 		)
 
 		cp.PrivateKey = priv
@@ -171,7 +171,7 @@ func TestCarInstall(t *testing.T) {
 
 		var (
 			cp2    CarPack
-			cinfo2 archive.CarInfo
+			cinfo2 data.CarInfo
 		)
 
 		cp2.PrivateKey = priv

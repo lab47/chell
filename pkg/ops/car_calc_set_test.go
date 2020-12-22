@@ -3,7 +3,7 @@ package ops
 import (
 	"testing"
 
-	"github.com/lab47/chell/pkg/archive"
+	"github.com/lab47/chell/pkg/data"
 	"github.com/mr-tron/base58"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,9 +16,9 @@ func TestCarCalcSet(t *testing.T) {
 
 	t.Run("computes cars to install first", func(t *testing.T) {
 		var sr staticReader
-		sr.info = &archive.CarInfo{
+		sr.info = &data.CarInfo{
 			ID: "abcdef-fake-1.0",
-			Dependencies: []*archive.CarDependency{
+			Dependencies: []*data.CarDependency{
 				{
 					ID:     fake + "-blah-1.0",
 					Repo:   "qux.com/pkg",
@@ -28,7 +28,7 @@ func TestCarCalcSet(t *testing.T) {
 		}
 
 		var sr2 staticReader
-		sr2.info = &archive.CarInfo{
+		sr2.info = &data.CarInfo{
 			ID: fake + "-blah-1.0",
 		}
 

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lab47/chell/pkg/archive"
+	"github.com/lab47/chell/pkg/data"
 	"github.com/mr-tron/base58"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/blake2b"
@@ -30,7 +30,7 @@ type CarPack struct {
 	Dependencies []string
 }
 
-func (c *CarPack) Pack(cinfo *archive.CarInfo, dir string, w io.Writer) error {
+func (c *CarPack) Pack(cinfo *data.CarInfo, dir string, w io.Writer) error {
 	var files []string
 
 	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -152,11 +152,15 @@ func (c *CarPack) Pack(cinfo *archive.CarInfo, dir string, w io.Writer) error {
 
 	if deps != nil {
 		for k := range deps {
+			if cinfo.ID != "" && strings.HasPrefix(cinfo.ID, k) {
+				continue
+			}
+
 			if c.MapDependencies != nil {
 				id, repo, signer := c.MapDependencies(k)
 				k = id
 
-				cinfo.Dependencies = append(cinfo.Dependencies, &archive.CarDependency{
+				cinfo.Dependencies = append(cinfo.Dependencies, &data.CarDependency{
 					ID:     id,
 					Repo:   repo,
 					Signer: signer,

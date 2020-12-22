@@ -9,14 +9,15 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/lab47/chell/pkg/archive"
+	"github.com/davecgh/go-spew/spew"
+	"github.com/lab47/chell/pkg/data"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type pkgCarReader struct {
 	data map[string][]byte
-	info map[string]*archive.CarInfo
+	info map[string]*data.CarInfo
 }
 
 func (p *pkgCarReader) Lookup(name string) (io.ReadCloser, error) {
@@ -28,7 +29,7 @@ func (p *pkgCarReader) Lookup(name string) (io.ReadCloser, error) {
 	return ioutil.NopCloser(bytes.NewReader(buf)), nil
 }
 
-func (p *pkgCarReader) Info(name string) (*archive.CarInfo, error) {
+func (p *pkgCarReader) Info(name string) (*data.CarInfo, error) {
 	info, ok := p.info[name]
 	if !ok {
 		return nil, NoCarData
@@ -103,6 +104,8 @@ func TestPackageCalcInstall(t *testing.T) {
 
 		toInstall, err := pci.Calculate(pkg)
 		require.NoError(t, err)
+
+		spew.Dump(sl)
 
 		p1 := sl.loaded["p1"]
 		require.NotNil(t, p1)
@@ -256,7 +259,7 @@ func TestPackageCalcInstall(t *testing.T) {
 		iv, ok := toInstall.Installers[toInstall.PackageIDs[0]]
 		require.True(t, ok)
 
-		_, ok = iv.(*InstallFunction)
+		_, ok = iv.(*ScriptInstall)
 		require.True(t, ok)
 	})
 
@@ -267,7 +270,7 @@ func TestPackageCalcInstall(t *testing.T) {
 		var sr staticReader
 		fmt.Fprintf(&sr.buf, "this is a car")
 
-		sr.info = &archive.CarInfo{}
+		sr.info = &data.CarInfo{}
 
 		var tc testClient
 
@@ -312,7 +315,7 @@ func TestPackageCalcInstall(t *testing.T) {
 			p2.ID(): []byte("this is a car"),
 		}
 
-		sr.info = map[string]*archive.CarInfo{
+		sr.info = map[string]*data.CarInfo{
 			p2.ID(): {},
 		}
 

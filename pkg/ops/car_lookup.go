@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/lab47/chell/pkg/archive"
+	"github.com/lab47/chell/pkg/data"
 	"github.com/lab47/chell/pkg/metadata"
 	"github.com/pkg/errors"
 )
@@ -23,7 +23,7 @@ type httpDo interface {
 
 type CarReader interface {
 	Lookup(name string) (io.ReadCloser, error)
-	Info(name string) (*archive.CarInfo, error)
+	Info(name string) (*data.CarInfo, error)
 }
 
 type CarLookup struct {
@@ -40,7 +40,7 @@ func (r *CarData) Open() (io.ReadCloser, error) {
 	return r.r.Lookup(r.name)
 }
 
-func (r *CarData) Info() (*archive.CarInfo, error) {
+func (r *CarData) Info() (*data.CarInfo, error) {
 	return r.r.Info(r.name)
 }
 
@@ -162,7 +162,7 @@ func (g *httpRoots) Lookup(name string) (io.ReadCloser, error) {
 	return nil, topError
 }
 
-func (g *httpRoots) Info(name string) (*archive.CarInfo, error) {
+func (g *httpRoots) Info(name string) (*data.CarInfo, error) {
 	var topError error
 
 	for _, r := range g.roots {
@@ -193,7 +193,7 @@ func (g *httpRoots) Info(name string) (*archive.CarInfo, error) {
 
 		defer resp.Body.Close()
 
-		var ai archive.CarInfo
+		var ai data.CarInfo
 
 		err = json.NewDecoder(resp.Body).Decode(&ai)
 		if err != nil {
@@ -315,7 +315,7 @@ func (g *GithubReleasesReader) Lookup(name string) (io.ReadCloser, error) {
 	return resp.Body, nil
 }
 
-func (g *GithubReleasesReader) Info(name string) (*archive.CarInfo, error) {
+func (g *GithubReleasesReader) Info(name string) (*data.CarInfo, error) {
 	req, err := http.NewRequest("GET", g.url+"-info.json", nil)
 	if err != nil {
 		return nil, err
@@ -330,7 +330,7 @@ func (g *GithubReleasesReader) Info(name string) (*archive.CarInfo, error) {
 		return nil, fmt.Errorf("error fetching car: %s: %d", g.url, resp.StatusCode)
 	}
 
-	var ai archive.CarInfo
+	var ai data.CarInfo
 
 	err = json.NewDecoder(resp.Body).Decode(&ai)
 

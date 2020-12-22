@@ -34,6 +34,7 @@ type Config struct {
 	signer   crypto.Signer
 	signerId string
 	pubKey   ed25519.PublicKey
+	privKey  ed25519.PrivateKey
 
 	// Actual Config
 	DataDir      string `json:"data-dir"`
@@ -202,7 +203,8 @@ func (c *Config) ensureSignerSet() error {
 	}
 
 	var (
-		priv     crypto.Signer
+		signer   crypto.Signer
+		priv     ed25519.PrivateKey
 		pub      ed25519.PublicKey
 		signerId string
 	)
@@ -215,10 +217,10 @@ func (c *Config) ensureSignerSet() error {
 			return err
 		}
 
-		epriv := ed25519.PrivateKey(data)
-		pub = epriv.Public().(ed25519.PublicKey)
-		signerId = "1:" + base58.Encode(epriv.Public().(ed25519.PublicKey))
-		priv = epriv
+		priv = ed25519.PrivateKey(data)
+		pub = priv.Public().(ed25519.PublicKey)
+		signerId = "1:" + base58.Encode(priv.Public().(ed25519.PublicKey))
+		signer = priv
 
 	} else {
 		epub, epriv, err := ed25519.GenerateKey(rand.Reader)
@@ -227,6 +229,7 @@ func (c *Config) ensureSignerSet() error {
 		}
 
 		pub = epub
+		priv = epriv
 
 		err = ioutil.WriteFile(path, []byte(base58.Encode(epriv)), 0600)
 		if err != nil {
@@ -234,12 +237,13 @@ func (c *Config) ensureSignerSet() error {
 		}
 
 		signerId = "1:" + base58.Encode(pub)
-		priv = epriv
+		signer = epriv
 	}
 
-	c.signer = priv
+	c.signer = signer
 	c.signerId = signerId
 	c.pubKey = pub
+	c.privKey = priv
 
 	return nil
 }
@@ -258,6 +262,14 @@ func (c *Config) Public() ed25519.PublicKey {
 	}
 
 	return c.pubKey
+}
+
+func (c *Config) Private() ed25519.PrivateKey {
+	if err := c.ensureSignerSet(); err != nil {
+		return nil
+	}
+
+	return c.privKey
 }
 
 func (c *Config) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) (signature []byte, err error) {
@@ -293,6 +305,21 @@ func (c *Config) ChellPath() []PathPart {
 				Name: c[:idx],
 				Path: c[idx+1:],
 			})
+		}
+	}
+
+	return pp
+}
+
+func (c *Config) LoadPath() []string {
+	var pp []string
+
+	for _, c := range strings.Split(c.Path, ":") {
+		idx := strings.IndexByte(c, '=')
+		if idx == -1 {
+			pp = append(pp, c)
+		} else {
+			pp = append(pp, c[idx+1:])
 		}
 	}
 

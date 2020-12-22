@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lab47/chell/pkg/archive"
+	"github.com/lab47/chell/pkg/data"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +20,7 @@ type staticReader struct {
 	buf  bytes.Buffer
 
 	infoName string
-	info     *archive.CarInfo
+	info     *data.CarInfo
 }
 
 func (s *staticReader) Lookup(name string) (io.ReadCloser, error) {
@@ -28,7 +28,7 @@ func (s *staticReader) Lookup(name string) (io.ReadCloser, error) {
 	return ioutil.NopCloser(&s.buf), nil
 }
 
-func (s *staticReader) Info(name string) (*archive.CarInfo, error) {
+func (s *staticReader) Info(name string) (*data.CarInfo, error) {
 	s.infoName = name
 	return s.info, nil
 }
@@ -56,7 +56,7 @@ func TestCarLookup(t *testing.T) {
 		var sr staticReader
 		fmt.Fprintf(&sr.buf, "this is a car")
 
-		sr.info = &archive.CarInfo{
+		sr.info = &data.CarInfo{
 			ID: "abcdef-foo-1.0",
 		}
 

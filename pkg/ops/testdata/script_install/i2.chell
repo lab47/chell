@@ -1,0 +1,8 @@
+pkg(
+  name: "i2",
+  dependencies: [touch],
+
+  def install(ctx) {
+    ctx.system("touch_flag")
+  }
+)

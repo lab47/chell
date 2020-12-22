@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/lab47/chell/pkg/archive"
+	"github.com/lab47/chell/pkg/data"
 	"github.com/mr-tron/base58"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -56,7 +56,7 @@ func TestCarUnpack(t *testing.T) {
 
 		fmt.Fprintf(dh, testBin)
 
-		var ci archive.CarInfo
+		var ci data.CarInfo
 		ci.ID = id
 
 		if len(pub) != 0 {
@@ -133,7 +133,7 @@ func TestCarUnpack(t *testing.T) {
 
 		require.NoError(t, tw.WriteHeader(&hdr))
 
-		var ci archive.CarInfo
+		var ci data.CarInfo
 		ci.ID = id
 
 		if len(pub) != 0 {

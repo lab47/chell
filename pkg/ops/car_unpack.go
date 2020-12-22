@@ -12,7 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/lab47/chell/pkg/archive"
+	"github.com/lab47/chell/pkg/data"
 	"github.com/mr-tron/base58"
 	"golang.org/x/crypto/blake2b"
 )
@@ -23,7 +23,7 @@ var (
 )
 
 type CarUnpack struct {
-	Info      archive.CarInfo
+	Info      data.CarInfo
 	Signature []byte
 }
 

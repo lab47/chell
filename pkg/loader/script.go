@@ -71,7 +71,7 @@ func (s *Script) RepoId() string {
 }
 
 func (s *Script) CarURL() string {
-	return s.ent.CarURL()
+	return ""
 }
 
 func (s *Script) PackageProto() *exprcore.Prototype {

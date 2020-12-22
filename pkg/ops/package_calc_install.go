@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/lab47/chell/pkg/archive"
+	"github.com/lab47/chell/pkg/data"
 	"github.com/pkg/errors"
 )
 
@@ -19,22 +19,18 @@ type PackageCalcInstall struct {
 }
 
 type PackageInstaller interface {
-	Install(ctx context.Context) error
+	Install(ctx context.Context, ienv *InstallEnv) error
 }
 
-type InstallFunction struct {
-	pkg *ScriptPackage
-}
-
-func (i *InstallFunction) Install(ctx context.Context) error {
-	return nil
+type PackageInfo interface {
+	PackageInfo() (name, repo, signer string)
 }
 
 type InstallCar struct {
 	data *CarData
 }
 
-func (i *InstallCar) Install(ctx context.Context) error {
+func (i *InstallCar) Install(ctx context.Context, ienv *InstallEnv) error {
 	return nil
 }
 
@@ -43,6 +39,7 @@ type PackagesToInstall struct {
 	InstallOrder []string
 	Installers   map[string]PackageInstaller
 	Dependencies map[string][]string
+	Scripts      map[string]*ScriptPackage
 }
 
 func (p *PackageCalcInstall) isInstalled(id string) (bool, error) {
@@ -123,7 +120,8 @@ func (p *PackageCalcInstall) consider(
 		}
 	}
 
-	pti.Installers[pkg.ID()] = &InstallFunction{pkg}
+	pti.Installers[pkg.ID()] = &ScriptInstall{pkg: pkg}
+	pti.Scripts[pkg.ID()] = pkg
 
 	for _, dep := range pkg.Dependencies() {
 		pti.Dependencies[pkg.ID()] = append(pti.Dependencies[pkg.ID()], dep.ID())
@@ -145,7 +143,7 @@ func (p *PackageCalcInstall) consider(
 }
 
 func (p *PackageCalcInstall) considerCarDep(
-	car *archive.CarDependency,
+	car *data.CarDependency,
 	pti *PackagesToInstall,
 	seen map[string]int,
 ) error {
@@ -201,6 +199,7 @@ func (p *PackageCalcInstall) Calculate(pkg *ScriptPackage) (*PackagesToInstall, 
 	var pti PackagesToInstall
 	pti.Installers = make(map[string]PackageInstaller)
 	pti.Dependencies = make(map[string][]string)
+	pti.Scripts = make(map[string]*ScriptPackage)
 
 	seen := map[string]int{
 		pkg.ID(): 0,

@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/lab47/chell/pkg/archive"
+	"github.com/lab47/chell/pkg/data"
 	"github.com/mr-tron/base58"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,7 +46,7 @@ func TestCarPack(t *testing.T) {
 		var (
 			cp    CarPack
 			buf   bytes.Buffer
-			cinfo archive.CarInfo
+			cinfo data.CarInfo
 		)
 
 		cp.PrivateKey = priv
@@ -83,7 +83,7 @@ func TestCarPack(t *testing.T) {
 		var (
 			cp    CarPack
 			buf   bytes.Buffer
-			cinfo archive.CarInfo
+			cinfo data.CarInfo
 		)
 
 		cp.PrivateKey = priv
@@ -115,7 +115,7 @@ func TestCarPack(t *testing.T) {
 		var (
 			cp    CarPack
 			buf   bytes.Buffer
-			cinfo archive.CarInfo
+			cinfo data.CarInfo
 		)
 
 		cp.PrivateKey = priv

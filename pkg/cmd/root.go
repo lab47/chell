@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/lab47/chell/pkg/config"
+	"github.com/lab47/chell/pkg/ops"
 	homedir "github.com/mitchellh/go-homedir"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -26,6 +28,20 @@ func Execute() error {
 	return rootCmd.Execute()
 }
 
+func loadAPI() (*ops.Ops, *config.Config, error) {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	o, err := ops.NewOps(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return o, cfg, nil
+}
+
 func init() {
 	cobra.OnInitialize(initConfig)
 
@@ -45,6 +61,10 @@ func init() {
 	rootCmd.AddCommand(gcCmd)
 	rootCmd.AddCommand(removeCmd)
 	rootCmd.AddCommand(exportKeyCmd)
+	rootCmd.AddCommand(calcCmd)
+	rootCmd.AddCommand(openCmd)
+	rootCmd.AddCommand(buildCmd)
+	rootCmd.AddCommand(uploadCmd)
 }
 
 func er(msg interface{}) {

@@ -102,7 +102,7 @@ func (p *Profile) Install(name string) error {
 		if !info.IsDir() {
 			lt, err := os.Readlink(target)
 			if err != nil || lt != path {
-				return fmt.Errorf("duplicate entries for %s", target)
+				fmt.Printf("skipping duplicate entries for %s", target)
 			}
 
 			return nil

@@ -1,0 +1,7 @@
+pkg(
+  name: "touch",
+
+  def install(ctx) {
+    ctx.system("bash", "-c", "echo foo > "+ctx.prefix+"/flag")
+  }
+)
