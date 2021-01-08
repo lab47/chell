@@ -13,6 +13,8 @@ import (
 var ErrCorruption = errors.New("corruption detected")
 
 type PackageCalcInstall struct {
+	common
+
 	StoreDir string
 
 	carLookup *CarLookup
@@ -40,9 +42,14 @@ type PackagesToInstall struct {
 	Installers   map[string]PackageInstaller
 	Dependencies map[string][]string
 	Scripts      map[string]*ScriptPackage
+	Installed    map[string]bool
 }
 
 func (p *PackageCalcInstall) isInstalled(id string) (bool, error) {
+	if p.StoreDir == "" {
+		return false, nil
+	}
+
 	path := filepath.Join(p.StoreDir, id)
 
 	fi, err := os.Stat(path)
@@ -72,6 +79,7 @@ func (p *PackageCalcInstall) consider(
 	}
 
 	if installed {
+		pti.Installed[pkg.ID()] = true
 		return nil
 	}
 
@@ -120,7 +128,7 @@ func (p *PackageCalcInstall) consider(
 		}
 	}
 
-	pti.Installers[pkg.ID()] = &ScriptInstall{pkg: pkg}
+	pti.Installers[pkg.ID()] = &ScriptInstall{common: p.common, pkg: pkg}
 	pti.Scripts[pkg.ID()] = pkg
 
 	for _, dep := range pkg.Dependencies() {
@@ -200,6 +208,7 @@ func (p *PackageCalcInstall) Calculate(pkg *ScriptPackage) (*PackagesToInstall, 
 	pti.Installers = make(map[string]PackageInstaller)
 	pti.Dependencies = make(map[string][]string)
 	pti.Scripts = make(map[string]*ScriptPackage)
+	pti.Installed = make(map[string]bool)
 
 	seen := map[string]int{
 		pkg.ID(): 0,

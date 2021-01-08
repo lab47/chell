@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"fmt"
 	"log"
+	"os"
 	"strings"
+	"text/tabwriter"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/lab47/chell/pkg/ops"
 	"github.com/spf13/cobra"
 )
@@ -36,8 +38,11 @@ func calc(c *cobra.Command, args []string) {
 		}
 	}
 
+	ns, name := parseName(args[0])
+
 	pkg, err := sl.Load(
-		args[0],
+		name,
+		ops.WithNamespace(ns),
 		ops.WithArgs(scriptArgs),
 		ops.WithConstraints(cfg.Constraints()),
 	)
@@ -52,5 +57,20 @@ func calc(c *cobra.Command, args []string) {
 		log.Fatal(err)
 	}
 
-	spew.Dump(toInstall)
+	tr := tabwriter.NewWriter(os.Stdout, 4, 2, 2, ' ', 0)
+
+	defer tr.Flush()
+
+	fmt.Fprintf(tr, "ID\tTYPE\tREPO\n")
+
+	for _, id := range toInstall.InstallOrder {
+		if scr, ok := toInstall.Scripts[id]; ok {
+			fmt.Fprintf(tr, "%s\tscript\t%s\n", id, scr.Repo())
+		} else if toInstall.Installed[id] {
+			fmt.Fprintf(tr, "%s\tinstalled\t\n", id)
+		} else {
+			fmt.Fprintf(tr, "%s\tcar\t\n", id)
+		}
+	}
+
 }

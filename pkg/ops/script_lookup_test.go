@@ -16,7 +16,7 @@ func TestScriptLookup(t *testing.T) {
 	t.Run("can load a script from a directory", func(t *testing.T) {
 		var sl ScriptLookup
 
-		sd, err := sl.loadDir("./testdata", "foo")
+		sd, err := sl.LoadDir("./testdata", "foo")
 		require.NoError(t, err)
 
 		expected, err := ioutil.ReadFile("./testdata/foo.chell")
@@ -28,7 +28,7 @@ func TestScriptLookup(t *testing.T) {
 	t.Run("can load a script from a packages directory", func(t *testing.T) {
 		var sl ScriptLookup
 
-		sd, err := sl.loadDir("./testdata", "foo2")
+		sd, err := sl.LoadDir("./testdata", "foo2")
 		require.NoError(t, err)
 
 		expected, err := ioutil.ReadFile("./testdata/packages/foo2.chell")
@@ -40,7 +40,7 @@ func TestScriptLookup(t *testing.T) {
 	t.Run("can load a script from a named directory", func(t *testing.T) {
 		var sl ScriptLookup
 
-		sd, err := sl.loadDir("./testdata", "foo3")
+		sd, err := sl.LoadDir("./testdata", "foo3")
 		require.NoError(t, err)
 
 		expected, err := ioutil.ReadFile("./testdata/packages/foo3/foo3.chell")
@@ -52,7 +52,7 @@ func TestScriptLookup(t *testing.T) {
 	t.Run("can load a script from a sharded directory", func(t *testing.T) {
 		var sl ScriptLookup
 
-		sd, err := sl.loadDir("./testdata", "foo4")
+		sd, err := sl.LoadDir("./testdata", "foo4")
 		require.NoError(t, err)
 
 		expected, err := ioutil.ReadFile("./testdata/packages/fo/foo4.chell")
@@ -64,7 +64,7 @@ func TestScriptLookup(t *testing.T) {
 	t.Run("can load a script from a named sharded directory", func(t *testing.T) {
 		var sl ScriptLookup
 
-		sd, err := sl.loadDir("./testdata", "foo5")
+		sd, err := sl.LoadDir("./testdata", "foo5")
 		require.NoError(t, err)
 
 		expected, err := ioutil.ReadFile("./testdata/packages/fo/foo5/foo5.chell")
@@ -221,7 +221,7 @@ func TestScriptLookup(t *testing.T) {
 	t.Run("can load assets", func(t *testing.T) {
 		var sl ScriptLookup
 
-		sd, err := sl.loadDir("./testdata", "foo")
+		sd, err := sl.LoadDir("./testdata", "foo")
 		require.NoError(t, err)
 
 		data, err := sd.Asset("blah.patch")

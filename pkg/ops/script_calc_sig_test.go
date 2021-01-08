@@ -38,7 +38,7 @@ func TestScriptCalcSig(t *testing.T) {
 		sig, err := sc.Calculate(mk(map[string]interface{}{
 			"name":    "p1",
 			"version": "0.1",
-		}), nil)
+		}), nil, nil)
 
 		require.NoError(t, err)
 
@@ -51,7 +51,7 @@ func TestScriptCalcSig(t *testing.T) {
 		s1, err := sc.calcSig(mk(map[string]interface{}{
 			"name":    "p1",
 			"version": "0.1",
-		}), nil)
+		}), nil, nil)
 
 		require.NoError(t, err)
 
@@ -59,14 +59,14 @@ func TestScriptCalcSig(t *testing.T) {
 		s2, err := sc2.calcSig(mk(map[string]interface{}{
 			"name":    "p2",
 			"version": "0.1",
-		}), nil)
+		}), nil, nil)
 		require.NoError(t, err)
 
 		var sc3 ScriptCalcSig
 		s3, err := sc3.calcSig(mk(map[string]interface{}{
 			"name":    "p1",
 			"version": "0.2",
-		}), nil)
+		}), nil, nil)
 		require.NoError(t, err)
 
 		assert.NotEqual(t, s1, s2)
@@ -78,7 +78,7 @@ func TestScriptCalcSig(t *testing.T) {
 		var sc ScriptCalcSig
 		sig, err := sc.Calculate(mk(map[string]interface{}{
 			"name": "p1",
-		}), nil)
+		}), nil, nil)
 
 		require.NoError(t, err)
 
@@ -86,7 +86,7 @@ func TestScriptCalcSig(t *testing.T) {
 		sig2, err := sc2.Calculate(mk(map[string]interface{}{
 			"name":    "p1",
 			"version": "unknown",
-		}), nil)
+		}), nil, nil)
 
 		require.NoError(t, err)
 
@@ -97,7 +97,7 @@ func TestScriptCalcSig(t *testing.T) {
 		var sc ScriptCalcSig
 		sig, err := sc.Calculate(mk(map[string]interface{}{
 			"name": "p1",
-		}), nil)
+		}), nil, nil)
 
 		require.NoError(t, err)
 
@@ -112,7 +112,7 @@ func TestScriptCalcSig(t *testing.T) {
 			"input": &ScriptFile{
 				path: "p1.input",
 			},
-		}), &td)
+		}), &td, nil)
 
 		require.NoError(t, err)
 
@@ -123,7 +123,7 @@ func TestScriptCalcSig(t *testing.T) {
 		var sc ScriptCalcSig
 		sig, err := sc.Calculate(mk(map[string]interface{}{
 			"name": "p1",
-		}), nil)
+		}), nil, nil)
 
 		require.NoError(t, err)
 
@@ -133,7 +133,7 @@ func TestScriptCalcSig(t *testing.T) {
 			"dependencies": exprcore.NewList([]exprcore.Value{
 				&ScriptPackage{id: "abcdef-q1-0.1"},
 			}),
-		}), nil)
+		}), nil, nil)
 
 		require.NoError(t, err)
 
@@ -158,4 +158,8 @@ func (t *testData) Asset(name string) ([]byte, error) {
 	}
 
 	return x, nil
+}
+
+func (t *testData) Repo() string {
+	return "test"
 }

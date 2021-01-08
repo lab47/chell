@@ -1,28 +1,35 @@
 package ops
 
 import (
+	"encoding/hex"
 	"fmt"
 	"hash/fnv"
 	"io"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/exprcore/exprcore"
 	"github.com/mr-tron/base58"
 	"github.com/pkg/errors"
+	"golang.org/x/crypto/blake2b"
 )
 
 type ScriptLoad struct {
+	common
+
 	StoreDir string
 
 	lookup *ScriptLookup
+	cfg    *Config
 
 	loaded map[string]*ScriptPackage
 }
 
-func loadedKey(name string, args map[string]string) string {
+func loadedKey(name, ns string, args map[string]string, path string) string {
 	var keys []string
 
 	for k := range args {
@@ -33,6 +40,8 @@ func loadedKey(name string, args map[string]string) string {
 
 	var sb strings.Builder
 	sb.WriteString(name)
+	sb.WriteString("-")
+	sb.WriteString(ns)
 
 	if len(keys) > 1 {
 		sb.WriteByte('-')
@@ -43,6 +52,8 @@ func loadedKey(name string, args map[string]string) string {
 			sb.WriteString(args[k])
 		}
 	}
+
+	sb.WriteString(path)
 
 	return sb.String()
 }
@@ -117,7 +128,9 @@ var ErrBadScript = errors.New("script error detected")
 type Option func(c *loadCfg)
 
 type loadCfg struct {
+	namespace         string
 	args, constraints map[string]string
+	configRepo        *ConfigRepo
 }
 
 func WithArgs(args map[string]string) Option {
@@ -132,6 +145,23 @@ func WithConstraints(args map[string]string) Option {
 	}
 }
 
+func WithNamespace(ns string) Option {
+	return func(c *loadCfg) {
+		c.namespace = ns
+	}
+}
+
+func WithConfigRepo(cr *ConfigRepo) Option {
+	return func(c *loadCfg) {
+		c.configRepo = cr
+	}
+}
+
+type loadContext struct {
+	repo        *ConfigRepo
+	constraints map[string]string
+}
+
 func (s *ScriptLoad) Load(name string, opts ...Option) (*ScriptPackage, error) {
 	if s.loaded == nil {
 		s.loaded = make(map[string]*ScriptPackage)
@@ -143,16 +173,65 @@ func (s *ScriptLoad) Load(name string, opts ...Option) (*ScriptPackage, error) {
 		o(&lc)
 	}
 
-	cacheKey := loadedKey(name, lc.args)
+	var path string
+
+	if lc.configRepo != nil {
+		path = lc.configRepo.Path
+	}
+
+	cacheKey := loadedKey(name, lc.namespace, lc.args, path)
 
 	sp, ok := s.loaded[cacheKey]
 	if ok {
+		if sp == nil {
+			return nil, fmt.Errorf("recursive dependencies detected")
+		}
+
 		return sp, nil
 	}
 
-	data, err := s.lookup.Load(name)
-	if err != nil {
-		return nil, err
+	var (
+		data ScriptData
+		err  error
+		cr   *ConfigRepo = lc.configRepo
+	)
+
+	if lc.namespace != "" {
+		cr, ok = s.cfg.Repos[lc.namespace]
+		if !ok {
+			return nil, fmt.Errorf("unknown namespace: %s", lc.namespace)
+		}
+	} else if cr == nil {
+		cr, _ = s.cfg.Repos["root"]
+	}
+
+	if cr != nil {
+		s.L().Debug("looking up script", "config-repo", cr.Path, "name", name)
+	} else {
+		s.L().Debug("looking up script", "name", name)
+	}
+
+	if cr != nil {
+		if cr.Github != "" {
+			data, err = s.lookup.LoadGithub(cr.Github, name)
+			if err != nil {
+				return nil, err
+			}
+		} else if cr.Path != "" {
+			data, err = s.lookup.LoadDir(cr.Path, name)
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		data, err = s.lookup.Load(name)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if data == nil {
+		return nil, fmt.Errorf("Unable to find script: %s", name)
 	}
 
 	pkgobj := exprcore.FromStringDict(exprcore.Root, nil)
@@ -167,6 +246,7 @@ func (s *ScriptLoad) Load(name string, opts ...Option) (*ScriptPackage, error) {
 		"pkg":    pkgobj,
 		"args":   args,
 		"file":   exprcore.NewBuiltin("file", s.fileFn),
+		"dir":    exprcore.NewBuiltin("dir", s.dirFn),
 		"inputs": exprcore.NewBuiltin("inputs", s.inputsFn),
 	}
 
@@ -177,9 +257,25 @@ func (s *ScriptLoad) Load(name string, opts ...Option) (*ScriptPackage, error) {
 
 	var thread exprcore.Thread
 
-	thread.Import = s.importPkg
+	lctx := &loadContext{
+		repo:        cr,
+		constraints: lc.constraints,
+	}
+
+	if cr != nil {
+		thread.Import = func(thread *exprcore.Thread, namespace, pkg string, args *exprcore.Dict) (exprcore.Value, error) {
+			return s.importUnderRepo(thread, lctx, namespace, pkg, args)
+		}
+	} else {
+		thread.Import = func(thread *exprcore.Thread, namespace, pkg string, args *exprcore.Dict) (exprcore.Value, error) {
+			return s.importPkg(thread, lctx, namespace, pkg, args)
+		}
+	}
 
 	thread.SetLocal("constraints", lc.constraints)
+	thread.SetLocal("script-data", data)
+
+	s.loaded[cacheKey] = nil
 
 	_, pkgval, err := prog.Init(&thread, vars)
 	if err != nil {
@@ -192,9 +288,12 @@ func (s *ScriptLoad) Load(name string, opts ...Option) (*ScriptPackage, error) {
 	}
 
 	sp = &ScriptPackage{
+		repo:        data.Repo(),
 		loader:      s,
 		constraints: lc.constraints,
 	}
+
+	sp.cs.common.logger = s.common.logger
 
 	id, err := sp.cs.Calculate(ppkg, data, lc.constraints)
 	if err != nil {
@@ -206,7 +305,7 @@ func (s *ScriptLoad) Load(name string, opts ...Option) (*ScriptPackage, error) {
 
 	s.loaded[cacheKey] = sp
 
-	err = s.loadHelpers(sp, name, data, vars)
+	err = s.loadHelpers(sp, lctx, name, data, vars)
 	if err != nil {
 		return nil, err
 	}
@@ -214,12 +313,74 @@ func (s *ScriptLoad) Load(name string, opts ...Option) (*ScriptPackage, error) {
 	return sp, nil
 }
 
-func (s *ScriptLoad) importPkg(thread *exprcore.Thread, name string) (exprcore.Value, error) {
+func (s *ScriptLoad) importUnderRepo(thread *exprcore.Thread, lctx *loadContext, ns, name string, args *exprcore.Dict) (exprcore.Value, error) {
 	var opts []Option
 
-	constraints := thread.Local("constraints")
+	constraints := lctx.constraints
 	if constraints != nil {
-		opts = append(opts, WithConstraints(constraints.(map[string]string)))
+		opts = append(opts, WithConstraints(constraints))
+	}
+
+	if args != nil {
+		loadArgs := make(map[string]string)
+
+		for _, pair := range args.Items() {
+			k, ok := pair[0].(exprcore.String)
+			if !ok {
+				return nil, fmt.Errorf("load arg key not a string")
+			}
+
+			v, ok := pair[1].(exprcore.String)
+			if !ok {
+				return nil, fmt.Errorf("load arg value not a string")
+			}
+
+			loadArgs[string(k)] = string(v)
+		}
+
+		opts = append(opts, WithArgs(loadArgs))
+	}
+
+	if ns != "" {
+		opts = append(opts, WithNamespace(ns))
+	} else {
+		opts = append(opts, WithConfigRepo(lctx.repo))
+	}
+
+	x, err := s.Load(name, opts...)
+	return x, err
+}
+
+func (s *ScriptLoad) importPkg(thread *exprcore.Thread, lctx *loadContext, ns, name string, args *exprcore.Dict) (exprcore.Value, error) {
+	var opts []Option
+
+	constraints := lctx.constraints
+	if constraints != nil {
+		opts = append(opts, WithConstraints(constraints))
+	}
+
+	if args != nil {
+		loadArgs := make(map[string]string)
+
+		for _, pair := range args.Items() {
+			k, ok := pair[0].(exprcore.String)
+			if !ok {
+				return nil, fmt.Errorf("load arg key not a string")
+			}
+
+			v, ok := pair[1].(exprcore.String)
+			if !ok {
+				return nil, fmt.Errorf("load arg value not a string")
+			}
+
+			loadArgs[string(k)] = string(v)
+		}
+
+		opts = append(opts, WithArgs(loadArgs))
+	}
+
+	if ns != "" {
+		opts = append(opts, WithNamespace(ns))
 	}
 
 	x, err := s.Load(name, opts...)
@@ -231,6 +392,7 @@ var ErrSumFormat = fmt.Errorf("sum must a tuple with (sum-type, sum)")
 func (l *ScriptLoad) fileFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	var (
 		path, darwin, linux string
+		into                string
 		sum                 exprcore.Tuple
 	)
 
@@ -240,6 +402,7 @@ func (l *ScriptLoad) fileFn(thread *exprcore.Thread, b *exprcore.Builtin, args e
 		"sum?", &sum,
 		"darwin?", &darwin,
 		"linux?", &linux,
+		"into?", &into,
 	); err != nil {
 		return nil, err
 	}
@@ -277,11 +440,86 @@ func (l *ScriptLoad) fileFn(thread *exprcore.Thread, b *exprcore.Builtin, args e
 		}
 	}
 
+	var data []byte
+
+	if strings.HasPrefix(path, "./") {
+		sdata := thread.Local("script-data").(ScriptData)
+
+		fdata, err := sdata.Asset(path)
+		if err != nil {
+			return nil, err
+		}
+
+		h, _ := blake2b.New256(nil)
+		h.Write(fdata)
+
+		sumType = "b2"
+		sumVal = exprcore.String(base58.Encode(h.Sum(nil)))
+
+		data = fdata
+	}
+
 	return &ScriptFile{
 		path:     path,
+		into:     into,
 		sumType:  string(sumType),
 		sumValue: string(sumVal),
+		data:     data,
 	}, nil
+}
+
+func hashDir(l hclog.Logger, dir string) ([]byte, error) {
+	h, _ := blake2b.New256(nil)
+
+	filepath.Walk(dir, func(fpath string, info os.FileInfo, err error) error {
+		switch {
+		case info.Mode().IsRegular():
+			fmt.Fprintf(h, "file: %s %d\n", fpath, info.Mode().Perm())
+			f, err := os.Open(fpath)
+			if err != nil {
+				return err
+			}
+
+			io.Copy(h, f)
+
+		case info.Mode().IsDir():
+			fmt.Fprintf(h, "dir: %s\n", fpath)
+		}
+
+		l.Trace("hash-dir", "path", fpath, "sum", base58.Encode(h.Sum(nil)))
+		return nil
+	})
+
+	return h.Sum(nil), nil
+}
+
+func (l *ScriptLoad) dirFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+	var path string
+
+	if err := exprcore.UnpackArgs(
+		"dir", args, kwargs,
+		"path?", &path,
+	); err != nil {
+		return nil, err
+	}
+
+	if path == "" {
+		path = "."
+	}
+
+	sf := &ScriptFile{
+		logger: l.common.L(),
+		dir:    path,
+	}
+
+	_, _, ok := sf.Sum()
+	if !ok {
+		return nil, fmt.Errorf("unable to sum directory")
+	}
+
+	l.common.L().Trace("dir-fn", "path", path, "sum", sf.sumValue)
+
+	return sf, nil
 }
 
 func (l *ScriptLoad) inputsFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
@@ -296,12 +534,39 @@ func (l *ScriptLoad) inputsFn(thread *exprcore.Thread, b *exprcore.Builtin, args
 }
 
 type ScriptFile struct {
+	logger hclog.Logger
+
 	path     string
 	sumType  string
 	sumValue string
+	into     string
+
+	dir string
+
+	data []byte
 }
 
 func (s *ScriptFile) Sum() (string, []byte, bool) {
+	if s.dir != "" {
+		if s.sumValue != "" {
+			data, err := base58.Decode(s.sumValue)
+			if err != nil {
+				return "", nil, false
+			}
+
+			return "dir", data, true
+		} else {
+			data, err := hashDir(s.logger, s.dir)
+			if err != nil {
+				return "", nil, false
+			}
+
+			s.sumValue = base58.Encode(data)
+
+			return "dir", data, true
+		}
+	}
+
 	switch s.sumType {
 	case "etag":
 		if len(s.sumValue) < 2 {
@@ -318,7 +583,18 @@ func (s *ScriptFile) Sum() (string, []byte, bool) {
 		}
 
 		return "etag", []byte(sv), true
+	case "sha256":
+		d, err := hex.DecodeString(s.sumValue)
+		if err != nil {
+			return "", nil, false
+		}
+
+		return "sha256", d, true
 	default:
+		if s.sumValue == "" {
+			panic("oh no")
+		}
+
 		b, err := base58.Decode(s.sumValue)
 		if err != nil {
 			return "", nil, false
@@ -351,7 +627,7 @@ func (s *ScriptFile) Hash() (uint32, error) {
 	return h.Sum32(), nil
 }
 
-func (l *ScriptLoad) loadHelpers(s *ScriptPackage, name string, data ScriptData, vars exprcore.StringDict) error {
+func (l *ScriptLoad) loadHelpers(s *ScriptPackage, lctx *loadContext, name string, data ScriptData, vars exprcore.StringDict) error {
 	exportName := name + ".export.chell"
 	b, err := data.Asset(exportName)
 	if err != nil {
@@ -367,7 +643,15 @@ func (l *ScriptLoad) loadHelpers(s *ScriptPackage, name string, data ScriptData,
 
 	var thread exprcore.Thread
 
-	thread.Import = l.importPkg
+	if lctx.repo != nil {
+		thread.Import = func(thread *exprcore.Thread, namespace, pkg string, args *exprcore.Dict) (exprcore.Value, error) {
+			return l.importUnderRepo(thread, lctx, namespace, pkg, args)
+		}
+	} else {
+		thread.Import = func(thread *exprcore.Thread, namespace, pkg string, args *exprcore.Dict) (exprcore.Value, error) {
+			return l.importPkg(thread, lctx, namespace, pkg, args)
+		}
+	}
 
 	gbls, _, err := prog.Init(&thread, vars)
 	if err != nil {

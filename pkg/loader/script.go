@@ -572,7 +572,7 @@ func (l *Loader) LoadScript(name string) (*Script, error) {
 	return script, nil
 }
 
-func (l *Loader) importPkg(thread *exprcore.Thread, name string) (exprcore.Value, error) {
+func (l *Loader) importPkg(thread *exprcore.Thread, ns, name string, _ *exprcore.Dict) (exprcore.Value, error) {
 	s, err := l.LoadScript(name)
 	return s, err
 }

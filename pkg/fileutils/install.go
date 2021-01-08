@@ -20,6 +20,12 @@ func (i *Install) Install() error {
 		i.L = hclog.L()
 	}
 
+	_, err := os.Stat(i.Pattern)
+	if err == nil {
+		os.MkdirAll(filepath.Dir(i.Dest), 0755)
+		return i.copyEntry(i.Pattern, i.Dest)
+	}
+
 	entries, err := filepath.Glob(i.Pattern)
 	if err != nil {
 		return err

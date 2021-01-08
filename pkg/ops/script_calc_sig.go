@@ -1,12 +1,16 @@
 package ops
 
 import (
+	"encoding/hex"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/chell/pkg/lang"
 	"github.com/lab47/exprcore/exprcore"
 	"github.com/mr-tron/base58"
@@ -19,6 +23,8 @@ type ScriptInput struct {
 }
 
 type ScriptCalcSig struct {
+	common
+
 	Name         string
 	Version      string
 	Install      *exprcore.Function
@@ -139,6 +145,29 @@ func (s *ScriptCalcSig) processInput(val exprcore.Value) error {
 	return nil
 }
 
+type calcLogger struct {
+	logger hclog.Logger
+	h      hash.Hash
+}
+
+func (c *calcLogger) Write(b []byte) (int, error) {
+	c.h.Write(b)
+
+	s := strconv.QuoteToASCII(string(b))
+
+	/*
+		for _, r := range s {
+			if !unicode.IsPrint(r) {
+				c.logger.Debug("calc-part", "part", b)
+				return len(b), nil
+			}
+		}
+	*/
+
+	c.logger.Debug("calc-part", "part", s[1:len(s)-1], "sum", hex.EncodeToString(c.h.Sum(nil)))
+	return len(b), nil
+}
+
 func (s *ScriptCalcSig) calcSig(
 	proto *exprcore.Prototype,
 	data ScriptData,
@@ -150,7 +179,11 @@ func (s *ScriptCalcSig) calcSig(
 			return "", err
 		}
 	}
-	h, _ := blake2b.New256(nil)
+
+	hb, _ := blake2b.New256(nil)
+
+	h := &calcLogger{logger: s.L(), h: hb}
+
 	fmt.Fprintf(h, "name: %s\n", s.Name)
 
 	fmt.Fprintf(h, "version: %s\n", s.Version)
@@ -160,6 +193,8 @@ func (s *ScriptCalcSig) calcSig(
 	for k := range constraints {
 		keys = append(keys, k)
 	}
+
+	sort.Strings(keys)
 
 	for _, k := range keys {
 		fmt.Fprintf(h, "constraint %s = %s\n", k, constraints[k])
@@ -193,7 +228,7 @@ func (s *ScriptCalcSig) calcSig(
 		fmt.Fprintf(h, "dep: %s\n", id)
 	}
 
-	return base58.Encode(h.Sum(nil)), nil
+	return base58.Encode(hb.Sum(nil)), nil
 }
 
 func (s *ScriptCalcSig) injectInputs(w io.Writer, data ScriptData) error {

@@ -27,26 +27,24 @@ func (r *RepoDetect) Detect(path string) (string, error) {
 	repo, err := git.PlainOpenWithOptions(path, &git.PlainOpenOptions{
 		DetectDotGit: true,
 	})
-	if err != nil {
-		return "", err
-	}
-
-	remote, err := repo.Remote("origin")
 	if err == nil {
-		urls := remote.Config().URLs
-		if len(urls) != 0 {
-			id, err := gitRemoteRepoId(urls[0])
-			if err != nil {
+		remote, err := repo.Remote("origin")
+		if err == nil {
+			urls := remote.Config().URLs
+			if len(urls) != 0 {
+				id, err := gitRemoteRepoId(urls[0])
+				if err != nil {
+					return "", err
+				}
+
+				r.known[path] = id
+
+				return id, nil
+			}
+		} else {
+			if err != git.ErrRemoteNotFound {
 				return "", err
 			}
-
-			r.known[path] = id
-
-			return id, nil
-		}
-	} else {
-		if err != git.ErrRemoteNotFound {
-			return "", err
 		}
 	}
 

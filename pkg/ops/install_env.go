@@ -6,4 +6,7 @@ type InstallEnv struct {
 
 	// Directory that contains installed packages
 	StoreDir string
+
+	// Start a shell
+	StartShell bool
 }

@@ -35,6 +35,7 @@ var (
 	outputDir   string
 	force       bool
 	profileName string
+	dev         bool
 )
 
 func init() {
@@ -42,6 +43,7 @@ func init() {
 	installCmd.PersistentFlags().StringVarP(&outputDir, "output-dir", "d", ".", "Directory to write car files when building only")
 	installCmd.PersistentFlags().BoolVarP(&force, "force", "", false, "force the build")
 	installCmd.PersistentFlags().StringVarP(&profileName, "profile", "p", config.DefaultProfile, "profile to install into")
+	installCmd.PersistentFlags().BoolVar(&dev, "dev", false, "Start a shell for packages development")
 }
 
 const StoreDir = "/usr/local/chell/main/store"
@@ -89,8 +91,9 @@ func install(c *cobra.Command, args []string) {
 	defer os.RemoveAll(buildDir)
 
 	ienv := &ops.InstallEnv{
-		BuildDir: buildDir,
-		StoreDir: StoreDir,
+		BuildDir:   buildDir,
+		StoreDir:   StoreDir,
+		StartShell: dev,
 	}
 
 	err = os.MkdirAll(ienv.StoreDir, 0755)
@@ -98,6 +101,9 @@ func install(c *cobra.Command, args []string) {
 		log.Print(err)
 		return
 	}
+
+	ui := ops.GetUI(ctx)
+	ui.InstallPrologue(cfg)
 
 	install := o.PackagesInstall(ienv)
 
@@ -177,6 +183,8 @@ func oldinstall(c *cobra.Command, args []string) {
 		}
 		return
 	}
+
+	return
 
 	prof, err := profile.OpenProfile(cfg, "")
 	if err != nil {

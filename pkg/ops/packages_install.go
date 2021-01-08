@@ -11,6 +11,8 @@ import (
 var ErrInstallError = errors.New("installation error")
 
 type PackagesInstall struct {
+	common
+
 	ienv *InstallEnv
 
 	Installed []string
@@ -28,6 +30,8 @@ func (p *PackagesInstall) Install(ctx context.Context, toInstall *PackagesToInst
 		if !ok {
 			return errors.Wrapf(ErrInstallError, "missing installer for %s", id)
 		}
+
+		p.L().Debug("running installer", "id", id)
 
 		err := fn.Install(ctx, p.ienv)
 		if err != nil {

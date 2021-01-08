@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -48,7 +50,7 @@ const (
 	DefaultProfilesPath = "~/.config/chell/profiles"
 	DefaultProfile      = "main"
 	DefaultDataDir      = "/usr/local/chell/main"
-	DefaultChellPath    = "/=github.com/lab47/chell-packages"
+	DefaultChellPath    = "./"
 )
 
 func LoadConfig() (*Config, error) {
@@ -370,7 +372,7 @@ func (c *ConfigRepo) Config() (*metadata.RepoConfig, error) {
 }
 
 func (c *Config) Constraints() map[string]string {
-	constrains := make(map[string]string)
+	constraints := make(map[string]string)
 
 	arch := runtime.GOARCH
 
@@ -378,8 +380,21 @@ func (c *Config) Constraints() map[string]string {
 		arch = s
 	}
 
-	constrains["chell/arch"] = arch
-	constrains["chell/root"] = c.DataDir
+	switch runtime.GOOS {
+	case "darwin":
+		// TODO(evanphx) When/if chell supports packaging /Library into a car, this can
+		// be dynamic, basically if the config is supposed to be "pure" or not.
+		ver, err := exec.Command("sw_vers", "-productVersion").Output()
+		if err == nil {
+			dot := bytes.LastIndexByte(ver, '.')
+			if dot != -1 {
+				constraints["darwin/version"] = string(ver[:dot])
+			}
+		}
+	}
 
-	return constrains
+	constraints["chell/arch"] = arch
+	constraints["chell/root"] = c.DataDir
+
+	return constraints
 }

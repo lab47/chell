@@ -18,31 +18,41 @@ var (
 )
 
 type ScriptLookup struct {
+	common
+
 	client httpDo
 
 	Path []string
+
+	repoDetect RepoDetect
 }
 
 type ScriptData interface {
 	Script() []byte
 	Asset(name string) ([]byte, error)
+	Repo() string
 }
 
 type dirScriptData struct {
 	data []byte
 
-	dir string
+	repo string
+	dir  string
 }
 
 func (s *dirScriptData) Script() []byte {
 	return s.data
 }
 
+func (s *dirScriptData) Repo() string {
+	return s.repo
+}
+
 func (s *dirScriptData) Asset(name string) ([]byte, error) {
 	return ioutil.ReadFile(filepath.Join(s.dir, name))
 }
 
-func (s *ScriptLookup) loadDir(dir, name string) (ScriptData, error) {
+func (s *ScriptLookup) LoadDir(dir, name string) (ScriptData, error) {
 	var short string
 
 	if len(name) > 2 {
@@ -77,9 +87,14 @@ func (s *ScriptLookup) loadDir(dir, name string) (ScriptData, error) {
 	}
 
 	for _, x := range possibles {
+		s.L().Trace("load-dir", "path", x.path)
 		data, err := ioutil.ReadFile(x.path)
 		if err == nil {
-			return &dirScriptData{data: data, dir: x.dir}, nil
+			repo, err := s.repoDetect.Detect(dir)
+			if err != nil {
+				panic(err)
+			}
+			return &dirScriptData{data: data, dir: x.dir, repo: repo}, nil
 		}
 	}
 
@@ -96,6 +111,10 @@ type ghScriptData struct {
 
 func (s *ghScriptData) Script() []byte {
 	return s.data
+}
+
+func (s *ghScriptData) Repo() string {
+	return s.base
 }
 
 func (s *ghScriptData) Asset(name string) ([]byte, error) {
@@ -126,6 +145,10 @@ func (s *ghScriptData) Asset(name string) ([]byte, error) {
 	}
 
 	return content.Content, nil
+}
+
+func (s *ScriptLookup) LoadGithub(repo, name string) (ScriptData, error) {
+	return s.loadGithub(s.client, repo, name)
 }
 
 func (s *ScriptLookup) loadGithub(client httpDo, repo, name string) (ScriptData, error) {
@@ -227,8 +250,16 @@ func (s *ScriptLookup) loadGithub(client httpDo, repo, name string) (ScriptData,
 	return nil, lastError
 }
 
+var cnt int
+
 func (s *ScriptLookup) Load(name string) (ScriptData, error) {
+	if s.client == nil {
+		s.client = http.DefaultClient
+	}
+
 	for _, p := range s.Path {
+		s.L().Trace("load-search", "path", p, "name", name)
+
 		r, err := s.loadGeneric(p, name)
 		if err != nil {
 			if err == ErrNotFound {
@@ -247,12 +278,12 @@ func (s *ScriptLookup) Load(name string) (ScriptData, error) {
 func (s *ScriptLookup) loadGeneric(p, name string) (ScriptData, error) {
 	switch {
 	case strings.HasPrefix(p, "./"):
-		r, err := s.loadDir(p, name)
+		r, err := s.LoadDir(p, name)
 		if err == nil {
 			return r, nil
 		}
 	case strings.HasPrefix(p, "/"):
-		r, err := s.loadDir(p, name)
+		r, err := s.LoadDir(p, name)
 		if err == nil {
 			return r, nil
 		}

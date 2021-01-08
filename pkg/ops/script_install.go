@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"hash"
 	"io"
 	"io/ioutil"
 	"os"
@@ -15,86 +17,192 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/hashicorp/go-getter"
 	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/chell/pkg/cleanhttp"
 	"github.com/lab47/chell/pkg/fileutils"
 	"github.com/lab47/exprcore/exprcore"
+	"github.com/pkg/errors"
 	"golang.org/x/crypto/blake2b"
 )
 
 type ScriptInstall struct {
+	common
+
 	pkg *ScriptPackage
 }
 
-func (i *ScriptInstall) setupInputs(dir string) error {
+func (i *ScriptInstall) setupInputFile(ui *UI, dir string, in ScriptInput) error {
+	var tgt string
+
+	if in.Data.into != "" {
+		tgt = filepath.Join(dir, in.Data.into)
+
+		// Allow the into argument to spring parent dirs into existance
+		err := os.MkdirAll(filepath.Dir(tgt), 0755)
+		if err != nil {
+			return err
+		}
+	} else {
+		tgt = filepath.Join(dir, in.Name+".data")
+	}
+
+	f, err := os.Create(tgt)
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	if in.Data.data != nil {
+		_, err = f.Write(in.Data.data)
+		return err
+	}
+
+	st, sv, ok := in.Data.Sum()
+	if !ok {
+		return fmt.Errorf("missing sum: %s", in.Data.path)
+	}
+
+	ui.DownloadInput(in.Data.path, st, sv)
+
+	resp, err := cleanhttp.Get(in.Data.path)
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close()
+
+	var (
+		w io.Writer
+		h hash.Hash
+	)
+
+	switch st {
+	case "b2":
+		h, _ = blake2b.New256(nil)
+		w = io.MultiWriter(f, h)
+	case "sha256":
+		h = sha256.New()
+		w = io.MultiWriter(f, h)
+	case "etag":
+		w = f
+		// ok
+	default:
+		return fmt.Errorf("unknown sum type: %s", st)
+	}
+
+	io.Copy(w, resp.Body)
+	switch st {
+	case "etag":
+		if string(sv) != resp.Header.Get("Etag") {
+			return fmt.Errorf("bad etag sum: %s", in.Data.path)
+		}
+	default:
+		if !bytes.Equal(sv, h.Sum(nil)) {
+			return fmt.Errorf("bad sum: %s", in.Data.path)
+		}
+	}
+
+	// If user specified where to download it to, just leave it as a file.
+	if in.Data.into != "" {
+		i.L().Trace("setup-input-file: wrote download to path", "path", in.Data.into)
+		return nil
+	}
+
+	i.L().Trace("setup-input-file: unpacking", "path", in.Name)
+
+	archive := ""
+	matchingLen := 0
+	for k := range getter.Decompressors {
+		if strings.HasSuffix(in.Data.path, "."+k) && len(k) > matchingLen {
+			archive = k
+			matchingLen = len(k)
+		}
+	}
+
+	target := filepath.Join(dir, in.Name)
+
+	if _, err := os.Stat(target); err == nil {
+		return nil
+	}
+
+	dec, ok := getter.Decompressors[archive]
+	if !ok {
+		return fmt.Errorf("unknown archive type: %s", in.Data.path)
+	}
+
+	err = dec.Decompress(target, tgt, true, 0)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (i *ScriptInstall) setupInputDir(ui *UI, dir string, in ScriptInput) error {
+	name := in.Name
+
+	if name == "" {
+		name = filepath.Base(in.Data.dir)
+	}
+
+	i.common.L().Trace("setup-input-dir", "name", name, "build-dir", dir, "input-dir", in.Data.dir)
+
+	var inst fileutils.Install
+	inst.L = i.common.L()
+	inst.Dest = filepath.Join(dir, name)
+	inst.Pattern = in.Data.dir
+
+	return inst.Install()
+}
+
+func (i *ScriptInstall) setupInputs(ui *UI, dir string) error {
 	for _, in := range i.pkg.cs.Inputs {
-		fpath := filepath.Join(dir, in.Name+".data")
-		f, err := os.Create(fpath)
+		if in.Data.dir != "" {
+			err := i.setupInputDir(ui, dir, in)
+			if err != nil {
+				return err
+			}
+		} else {
+			err := i.setupInputFile(ui, dir, in)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (i *ScriptInstall) allDeps(pkg *ScriptPackage, f func(pkg *ScriptPackage) error) error {
+	seen := make(map[string]struct{})
+
+	var deps []*ScriptPackage
+
+	deps = append(deps, pkg.Dependencies()...)
+
+	for len(deps) > 0 {
+		dep := deps[0]
+		deps = deps[1:]
+
+		if _, ok := seen[dep.ID()]; ok {
+			continue
+		}
+
+		seen[dep.ID()] = struct{}{}
+
+		err := f(dep)
 		if err != nil {
 			return err
 		}
 
-		defer f.Close()
-
-		resp, err := cleanhttp.Get(in.Data.path)
-		if err != nil {
-			return err
-		}
-
-		defer resp.Body.Close()
-
-		spew.Dump(resp.Header)
-		fmt.Printf("=> %s = %s\n", in.Name, in.Data.path)
-
-		h, _ := blake2b.New256(nil)
-
-		io.Copy(io.MultiWriter(f, h), resp.Body)
-
-		st, sv, ok := in.Data.Sum()
-		if !ok {
-			return fmt.Errorf("missing sum: %s", in.Data.path)
-		}
-
-		switch st {
-		case "etag":
-			if string(sv) != resp.Header.Get("Etag") {
-				spew.Dump(sv)
-				spew.Dump(resp.Header.Get("Etag"))
-				return fmt.Errorf("bad etag sum: %s", in.Data.path)
+		for _, x := range dep.Dependencies() {
+			if _, ok := seen[x.ID()]; ok {
+				continue
 			}
-		case "b2":
-			if !bytes.Equal(sv, h.Sum(nil)) {
-				return fmt.Errorf("bad sum: %s", in.Data.path)
-			}
-		default:
-			return fmt.Errorf("unknown sum type: %s", st)
-		}
 
-		archive := ""
-		matchingLen := 0
-		for k := range getter.Decompressors {
-			if strings.HasSuffix(in.Data.path, "."+k) && len(k) > matchingLen {
-				archive = k
-				matchingLen = len(k)
-			}
-		}
-
-		target := filepath.Join(dir, in.Name)
-
-		if _, err := os.Stat(target); err == nil {
-			return nil
-		}
-
-		dec, ok := getter.Decompressors[archive]
-		if !ok {
-			return fmt.Errorf("unknown archive type: %s", in.Data.path)
-		}
-
-		err = dec.Decompress(target, fpath, true, 0)
-		if err != nil {
-			return err
+			deps = append(deps, x)
 		}
 	}
 
@@ -104,7 +212,10 @@ func (i *ScriptInstall) setupInputs(dir string) error {
 func (i *ScriptInstall) Install(ctx context.Context, ienv *InstallEnv) error {
 	var thread exprcore.Thread
 
-	log := hclog.FromContext(ctx)
+	log := i.L()
+	ui := GetUI(ctx)
+
+	ui.RunScript(i.pkg)
 
 	buildDir := filepath.Join(ienv.BuildDir, "build-"+i.pkg.ID())
 	targetDir := filepath.Join(ienv.StoreDir, i.pkg.ID())
@@ -121,23 +232,22 @@ func (i *ScriptInstall) Install(ctx context.Context, ienv *InstallEnv) error {
 		return err
 	}
 
-	err = i.setupInputs(buildDir)
+	err = i.setupInputs(ui, buildDir)
 	if err != nil {
-		return err
+		return track(err)
 	}
 
 	runDir := buildDir
 
 	if len(i.pkg.cs.Inputs) == 1 {
-		runDir = filepath.Join(runDir, i.pkg.cs.Inputs[0].Name)
+		checkDir := filepath.Join(runDir, i.pkg.cs.Inputs[0].Name)
 
-		sf, err := ioutil.ReadDir(runDir)
-		if err != nil {
-			return err
-		}
-
-		if len(sf) == 1 && sf[0].IsDir() {
-			runDir = filepath.Join(runDir, sf[0].Name())
+		sf, err := ioutil.ReadDir(checkDir)
+		if err == nil {
+			runDir = checkDir
+			if len(sf) == 1 && sf[0].IsDir() {
+				runDir = filepath.Join(runDir, sf[0].Name())
+			}
 		}
 	}
 
@@ -149,25 +259,70 @@ func (i *ScriptInstall) Install(ctx context.Context, ienv *InstallEnv) error {
 
 	args := exprcore.Tuple{&rc}
 
-	var path []string
+	var (
+		path    []string
+		cflags  []string
+		ldflags []string
+	)
 
-	for _, dep := range i.pkg.Dependencies() {
+	i.allDeps(i.pkg, func(dep *ScriptPackage) error {
 		path = append(path, filepath.Join(ienv.StoreDir, dep.ID(), "bin"))
-	}
+
+		incpath := filepath.Join(ienv.StoreDir, dep.ID(), "include")
+		if _, err := os.Stat(incpath); err == nil {
+			cflags = append(cflags, "-I"+incpath)
+		}
+
+		libpath := filepath.Join(ienv.StoreDir, dep.ID(), "lib")
+		if _, err := os.Stat(libpath); err == nil {
+			ldflags = append(ldflags, "-L"+libpath)
+		}
+		return nil
+	})
 
 	path = append(path, "/bin", "/usr/bin")
 
-	rc.extraEnv = []string{"HOME=/nonexistant", "PATH=" + strings.Join(path, ":")}
+	rc.path = strings.Join(path, ":")
+	rc.extraEnv = []string{"HOME=/nonexistant", "PATH=" + rc.path}
 
-	for _, dep := range i.pkg.Dependencies() {
+	if len(cflags) > 0 {
+		rc.extraEnv = append(rc.extraEnv, "CFLAGS="+strings.Join(cflags, " "))
+	}
+
+	if len(ldflags) > 0 {
+		rc.extraEnv = append(rc.extraEnv, "LDFLAGS="+strings.Join(ldflags, " "))
+	}
+
+	err = i.allDeps(i.pkg, func(dep *ScriptPackage) error {
 		hook := dep.cs.Hook
 		if hook == nil {
-			continue
+			return nil
 		}
 
 		rc.installDir = filepath.Join(ienv.StoreDir, dep.ID())
 
 		_, err := exprcore.Call(&thread, hook, args, nil)
+		return err
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if ienv.StartShell {
+		shell := "/bin/bash"
+
+		cmd := exec.Command(shell)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		cmd.Env = append(cmd.Env, rc.extraEnv...)
+		cmd.Env = append(cmd.Env, "PREFIX="+targetDir)
+
+		cmd.Dir = runDir
+
+		err = cmd.Run()
 		if err != nil {
 			return err
 		}
@@ -183,6 +338,9 @@ type RunCtx struct {
 
 	installDir, buildDir string
 	extraEnv             []string
+
+	// Used by system, so cached outside extraEnv
+	path string
 
 	outputPrefix string
 
@@ -289,6 +447,47 @@ func chdirFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, 
 	return exprcore.Call(thread, fn, exprcore.Tuple{}, nil)
 }
 
+func findExecutable(file string) error {
+	d, err := os.Stat(file)
+	if err != nil {
+		return err
+	}
+	if m := d.Mode(); !m.IsDir() && m&0111 != 0 {
+		return nil
+	}
+	return os.ErrPermission
+}
+
+// LookPath searches for an executable named file in the
+// directories named by the PATH environment variable.
+// If file contains a slash, it is tried directly and the PATH is not consulted.
+// The result may be an absolute path or a path relative to the current directory.
+func lookPath(file string, path string) (string, error) {
+	// NOTE(rsc): I wish we could use the Plan 9 behavior here
+	// (only bypass the path if file begins with / or ./ or ../)
+	// but that would not match all the Unix shells.
+
+	if strings.Contains(file, "/") {
+		err := findExecutable(file)
+		if err == nil {
+			return file, nil
+		}
+		return "", err
+	}
+
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" {
+			// Unix shell semantics: path element "" means "."
+			dir = "."
+		}
+		path := filepath.Join(dir, file)
+		if err := findExecutable(path); err == nil {
+			return path, nil
+		}
+	}
+	return "", errors.Wrapf(ErrNotFound, "unable to find executable: %s", path)
+}
+
 func systemFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	env, ok := b.Receiver().(*RunCtx)
 	if !ok {
@@ -320,16 +519,28 @@ func systemFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple,
 		}
 	}
 
-	env.L.Debug("invoking system", "command", segments)
-
-	cmd := exec.Command(segments[0], segments[1:]...)
-
-	cmd.Env = env.extraEnv
 	if dir == "" {
-		cmd.Dir = env.buildDir
+		dir = env.buildDir
 	} else {
-		cmd.Dir = filepath.Join(env.buildDir, dir)
+		dir = filepath.Join(env.buildDir, dir)
 	}
+
+	var err error
+
+	exe := segments[0]
+
+	if filepath.Base(exe) == exe {
+		exe, err = lookPath(segments[0], env.path)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	cmd := exec.Command(exe, segments[1:]...)
+	cmd.Env = env.extraEnv
+	cmd.Dir = dir
+
+	env.L.Debug("invoking system", "command", cmd.Path, "args", cmd.Args, "dir", cmd.Dir)
 
 	or, err := cmd.StdoutPipe()
 	if err != nil {
@@ -785,6 +996,7 @@ func installFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple
 	}
 
 	var inst fileutils.Install
+	inst.L = env.L
 	inst.Dest = target
 	inst.Pattern = pattern
 	inst.Linked = symlink

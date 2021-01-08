@@ -94,4 +94,61 @@ func TestInstall(t *testing.T) {
 
 		assert.Equal(t, os.ModeSymlink, fi.Mode()&os.ModeType)
 	})
+
+	t.Run("copies a specified directory to a new location with a new name", func(t *testing.T) {
+		defer cleanup()
+
+		wf("a/file", "this is a file")
+		wf("a/sub/file", "this is a file also")
+
+		in := &Install{
+			L:       L,
+			Pattern: tmpdira,
+			Dest:    tmpdirb,
+		}
+
+		err := in.Install()
+		require.NoError(t, err)
+
+		assertFile(t, "b/file", "this is a file")
+		assertFile(t, "b/sub/file", "this is a file also")
+	})
+
+	t.Run("copies a specified directory to a new location with a new subdir", func(t *testing.T) {
+		defer cleanup()
+
+		wf("a/file", "this is a file")
+		wf("a/sub/file", "this is a file also")
+
+		in := &Install{
+			L:       L,
+			Pattern: tmpdira,
+			Dest:    filepath.Join(tmpdirb, "lib", "brew"),
+		}
+
+		err := in.Install()
+		require.NoError(t, err)
+
+		assertFile(t, "b/lib/brew/file", "this is a file")
+		assertFile(t, "b/lib/brew/sub/file", "this is a file also")
+	})
+
+	t.Run("copies a specified file to a new location with a new name", func(t *testing.T) {
+		defer cleanup()
+
+		wf("a/file", "this is a file")
+		wf("a/sub/file", "this is a file also")
+
+		in := &Install{
+			L:       L,
+			Pattern: filepath.Join(tmpdira, "file"),
+			Dest:    filepath.Join(tmpdirb, "nf"),
+		}
+
+		err := in.Install()
+		require.NoError(t, err)
+
+		assertFile(t, "b/nf", "this is a file")
+	})
+
 }
