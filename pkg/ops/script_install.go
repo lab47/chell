@@ -33,7 +33,10 @@ type ScriptInstall struct {
 }
 
 func (i *ScriptInstall) setupInputFile(ui *UI, dir string, in ScriptInput) error {
-	var tgt string
+	var (
+		tgt, archive string
+		dec          getter.Decompressor
+	)
 
 	if in.Data.into != "" {
 		tgt = filepath.Join(dir, in.Data.into)
@@ -44,7 +47,22 @@ func (i *ScriptInstall) setupInputFile(ui *UI, dir string, in ScriptInput) error
 			return err
 		}
 	} else {
-		tgt = filepath.Join(dir, in.Name+".data")
+		matchingLen := 0
+		for k := range getter.Decompressors {
+			if strings.HasSuffix(in.Data.path, "."+k) && len(k) > matchingLen {
+				archive = k
+				matchingLen = len(k)
+			}
+		}
+
+		var ok bool
+
+		dec, ok = getter.Decompressors[archive]
+		if ok {
+			tgt = filepath.Join(dir, in.Name+".data")
+		} else {
+			tgt = filepath.Join(dir, in.Name+filepath.Ext(in.Data.path))
+		}
 	}
 
 	f, err := os.Create(tgt)
@@ -110,26 +128,16 @@ func (i *ScriptInstall) setupInputFile(ui *UI, dir string, in ScriptInput) error
 		return nil
 	}
 
-	i.L().Trace("setup-input-file: unpacking", "path", in.Name)
-
-	archive := ""
-	matchingLen := 0
-	for k := range getter.Decompressors {
-		if strings.HasSuffix(in.Data.path, "."+k) && len(k) > matchingLen {
-			archive = k
-			matchingLen = len(k)
-		}
+	if dec == nil {
+		return nil
 	}
+
+	i.L().Trace("setup-input-file: unpacking", "path", in.Name)
 
 	target := filepath.Join(dir, in.Name)
 
 	if _, err := os.Stat(target); err == nil {
 		return nil
-	}
-
-	dec, ok := getter.Decompressors[archive]
-	if !ok {
-		return fmt.Errorf("unknown archive type: %s", in.Data.path)
 	}
 
 	err = dec.Decompress(target, tgt, true, 0)
@@ -175,40 +183,6 @@ func (i *ScriptInstall) setupInputs(ui *UI, dir string) error {
 	return nil
 }
 
-func (i *ScriptInstall) allDeps(pkg *ScriptPackage, f func(pkg *ScriptPackage) error) error {
-	seen := make(map[string]struct{})
-
-	var deps []*ScriptPackage
-
-	deps = append(deps, pkg.Dependencies()...)
-
-	for len(deps) > 0 {
-		dep := deps[0]
-		deps = deps[1:]
-
-		if _, ok := seen[dep.ID()]; ok {
-			continue
-		}
-
-		seen[dep.ID()] = struct{}{}
-
-		err := f(dep)
-		if err != nil {
-			return err
-		}
-
-		for _, x := range dep.Dependencies() {
-			if _, ok := seen[x.ID()]; ok {
-				continue
-			}
-
-			deps = append(deps, x)
-		}
-	}
-
-	return nil
-}
-
 func (i *ScriptInstall) Install(ctx context.Context, ienv *InstallEnv) error {
 	var thread exprcore.Thread
 
@@ -237,10 +211,23 @@ func (i *ScriptInstall) Install(ctx context.Context, ienv *InstallEnv) error {
 		return track(err)
 	}
 
-	runDir := buildDir
+	var primary *ScriptInput
 
 	if len(i.pkg.cs.Inputs) == 1 {
-		checkDir := filepath.Join(runDir, i.pkg.cs.Inputs[0].Name)
+		primary = &i.pkg.cs.Inputs[0]
+	} else {
+		for _, i := range i.pkg.cs.Inputs {
+			if i.Data.chdir {
+				primary = &i
+				break
+			}
+		}
+	}
+
+	runDir := buildDir
+
+	if primary != nil {
+		checkDir := filepath.Join(runDir, primary.Name)
 
 		sf, err := ioutil.ReadDir(checkDir)
 		if err == nil {
@@ -252,20 +239,32 @@ func (i *ScriptInstall) Install(ctx context.Context, ienv *InstallEnv) error {
 	}
 
 	var rc RunCtx
+	rc.ctx = ctx
 	rc.L = log
 	rc.attrs = RunCtxFunctions
 	rc.installDir = targetDir
 	rc.buildDir = runDir
+	rc.topDir = buildDir
+	rc.outputPrefix = i.pkg.Name()
 
 	args := exprcore.Tuple{&rc}
 
 	var (
-		path    []string
-		cflags  []string
-		ldflags []string
+		path      []string
+		cflags    []string
+		ldflags   []string
+		pkgconfig []string
 	)
 
-	i.allDeps(i.pkg, func(dep *ScriptPackage) error {
+	var scd ScriptCalcDeps
+	scd.storeDir = ienv.StoreDir
+
+	buildDeps, err := scd.BuildDeps(i.pkg)
+	if err != nil {
+		return err
+	}
+
+	for _, dep := range buildDeps {
 		path = append(path, filepath.Join(ienv.StoreDir, dep.ID(), "bin"))
 
 		incpath := filepath.Join(ienv.StoreDir, dep.ID(), "include")
@@ -276,9 +275,13 @@ func (i *ScriptInstall) Install(ctx context.Context, ienv *InstallEnv) error {
 		libpath := filepath.Join(ienv.StoreDir, dep.ID(), "lib")
 		if _, err := os.Stat(libpath); err == nil {
 			ldflags = append(ldflags, "-L"+libpath)
+
+			pcpath := filepath.Join(ienv.StoreDir, dep.ID(), "lib", "pkgconfig")
+			if _, err := os.Stat(pcpath); err == nil {
+				pkgconfig = append(pkgconfig, pcpath)
+			}
 		}
-		return nil
-	})
+	}
 
 	path = append(path, "/bin", "/usr/bin")
 
@@ -293,20 +296,24 @@ func (i *ScriptInstall) Install(ctx context.Context, ienv *InstallEnv) error {
 		rc.extraEnv = append(rc.extraEnv, "LDFLAGS="+strings.Join(ldflags, " "))
 	}
 
-	err = i.allDeps(i.pkg, func(dep *ScriptPackage) error {
+	if len(pkgconfig) > 0 {
+		rc.extraEnv = append(rc.extraEnv, "PKG_CONFIG_PATH="+strings.Join(pkgconfig, ":"))
+	}
+
+	ui.ListDepedencies(buildDeps)
+
+	for _, dep := range buildDeps {
 		hook := dep.cs.Hook
 		if hook == nil {
-			return nil
+			continue
 		}
 
 		rc.installDir = filepath.Join(ienv.StoreDir, dep.ID())
 
 		_, err := exprcore.Call(&thread, hook, args, nil)
-		return err
-	})
-
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
 	}
 
 	if ienv.StartShell {
@@ -330,17 +337,65 @@ func (i *ScriptInstall) Install(ctx context.Context, ienv *InstallEnv) error {
 
 	rc.installDir = targetDir
 	_, err = exprcore.Call(&thread, i.pkg.cs.Install, args, nil)
+
+	if err != nil {
+		log.Error("error running script install", "error", err)
+	} else {
+		var pan PackageAdjustNames
+
+		perr := pan.Adjust(targetDir)
+		if perr != nil {
+			log.Error("Error adjusting library names", "error", perr)
+		}
+
+		var pwi PackageWriteInfo
+		pwi.storeDir = ienv.StoreDir
+
+		_, perr = pwi.Write(i.pkg)
+		if perr != nil {
+			log.Error("error writing package info", "error", perr)
+		}
+
+		var sf StoreFreeze
+		sf.storeDir = ienv.StoreDir
+
+		perr = sf.Freeze(i.pkg.ID())
+		if perr != nil {
+			log.Error("error freezing store dir", "error", perr)
+		}
+	}
+
+	if ienv.StartShell {
+		shell := "/bin/bash"
+
+		cmd := exec.Command(shell)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		cmd.Env = append(cmd.Env, rc.extraEnv...)
+		cmd.Env = append(cmd.Env, "PREFIX="+targetDir)
+
+		cmd.Dir = runDir
+
+		cmd.Run()
+	}
+
 	return err
 }
 
 type RunCtx struct {
 	L hclog.Logger
 
-	installDir, buildDir string
-	extraEnv             []string
+	ctx context.Context
+
+	installDir, buildDir, topDir string
+	extraEnv                     []string
 
 	// Used by system, so cached outside extraEnv
 	path string
+
+	h io.Writer
 
 	outputPrefix string
 
@@ -386,6 +441,8 @@ func (r *RunCtx) Attr(name string) (exprcore.Value, error) {
 		return exprcore.String(r.installDir), nil
 	case "build":
 		return exprcore.String(r.buildDir), nil
+	case "top":
+		return exprcore.String(r.topDir), nil
 	}
 
 	val, err := r.attrs.Attr(name)
@@ -397,7 +454,7 @@ func (r *RunCtx) Attr(name string) (exprcore.Value, error) {
 }
 
 func (r *RunCtx) AttrNames() []string {
-	return append([]string{"prefix", "build"}, r.attrs.AttrNames()...)
+	return append([]string{"prefix", "build", "top"}, r.attrs.AttrNames()...)
 }
 
 func noRunRC(v interface{}) (exprcore.Value, error) {
@@ -406,6 +463,8 @@ func noRunRC(v interface{}) (exprcore.Value, error) {
 
 var RunCtxFunctions = exprcore.StringDict{
 	"system":        exprcore.NewBuiltin("system", systemFn),
+	"shell":         exprcore.NewBuiltin("shell", shellFn),
+	"apply_patch":   exprcore.NewBuiltin("apply_patch", patchFn),
 	"inreplace":     exprcore.NewBuiltin("inreplace", inreplaceFn),
 	"inreplace_re":  exprcore.NewBuiltin("inreplace_re", inreplaceReFn),
 	"rm_f":          exprcore.NewBuiltin("rm_f", rmrfFn),
@@ -417,6 +476,7 @@ var RunCtxFunctions = exprcore.StringDict{
 	"install_files": exprcore.NewBuiltin("install_files", installFn),
 	"write_file":    exprcore.NewBuiltin("write_file", writeFileFn),
 	"chdir":         exprcore.NewBuiltin("chdir", chdirFn),
+	"mkdir":         exprcore.NewBuiltin("mkdir", mkdirFn),
 }
 
 func chdirFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
@@ -430,11 +490,19 @@ func chdirFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, 
 		fn  exprcore.Callable
 	)
 
-	exprcore.UnpackArgs(
-		"pkg", args, kwargs,
+	if err := exprcore.UnpackArgs(
+		"chdir", args, kwargs,
 		"dir", &dir,
 		"fn", &fn,
-	)
+	); err != nil {
+		return nil, err
+	}
+
+	if env.h != nil {
+		fmt.Fprintf(env.h, "chdir %s\n", dir)
+		// Because chdir is pure, run it so we can capture the effects
+		// of the lambda
+	}
 
 	old := env.buildDir
 
@@ -445,6 +513,38 @@ func chdirFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, 
 	env.buildDir = filepath.Join(env.buildDir, dir)
 
 	return exprcore.Call(thread, fn, exprcore.Tuple{}, nil)
+}
+
+func mkdirFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+	env, ok := b.Receiver().(*RunCtx)
+	if !ok {
+		return noRunRC(b.Receiver())
+	}
+
+	var (
+		dir string
+	)
+
+	if err := exprcore.UnpackArgs(
+		"mkdir", args, kwargs,
+		"dir", &dir,
+	); err != nil {
+		return nil, err
+	}
+
+	dir = filepath.Join(env.buildDir, dir)
+
+	if env.h != nil {
+		fmt.Fprintf(env.h, "mkdir %s\n", dir)
+		return exprcore.None, nil
+	}
+
+	err := os.MkdirAll(dir, 0755)
+	if err != nil {
+		return nil, err
+	}
+
+	return exprcore.None, nil
 }
 
 func findExecutable(file string) error {
@@ -488,6 +588,176 @@ func lookPath(file string, path string) (string, error) {
 	return "", errors.Wrapf(ErrNotFound, "unable to find executable: %s", path)
 }
 
+func shellFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+	env, ok := b.Receiver().(*RunCtx)
+	if !ok {
+		return noRunRC(b.Receiver())
+	}
+
+	var code string
+
+	if err := exprcore.UnpackArgs(
+		"shell", args, kwargs,
+		"code", &code,
+	); err != nil {
+		return nil, err
+	}
+
+	if env.h != nil {
+		fmt.Fprintf(env.h, "shell %s\n", code)
+		return exprcore.None, nil
+	}
+
+	cmd := exec.Command("bash")
+	cmd.Stdin = strings.NewReader(code)
+	cmd.Env = env.extraEnv
+	cmd.Dir = env.buildDir
+
+	or, err := cmd.StdoutPipe()
+	if err != nil {
+		return exprcore.None, err
+	}
+
+	er, err := cmd.StderrPipe()
+	if err != nil {
+		return exprcore.None, err
+	}
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		br := bufio.NewReader(or)
+		for {
+			line, err := br.ReadString('\n')
+			if len(line) > 0 {
+				fmt.Printf("%s │ %s\n", env.outputPrefix, strings.TrimRight(line, " \n\t"))
+			}
+
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		br := bufio.NewReader(er)
+		for {
+			line, err := br.ReadString('\n')
+			if len(line) > 0 {
+				fmt.Printf("%s │ %s\n", env.outputPrefix, strings.TrimRight(line, " \n\t"))
+			}
+
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	err = cmd.Start()
+	if err != nil {
+		return nil, err
+	}
+
+	wg.Wait()
+
+	err = cmd.Wait()
+	if err != nil {
+		return nil, err
+	}
+
+	return exprcore.None, nil
+}
+
+func patchFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+	env, ok := b.Receiver().(*RunCtx)
+	if !ok {
+		return noRunRC(b.Receiver())
+	}
+
+	var patch string
+
+	if err := exprcore.UnpackArgs(
+		"patch", args, kwargs,
+		"patch", &patch,
+	); err != nil {
+		return nil, err
+	}
+
+	if env.h != nil {
+		fmt.Fprintf(env.h, "patch %s\n", args)
+		return exprcore.None, nil
+	}
+
+	cmd := exec.Command("patch", "-p1")
+	cmd.Stdin = strings.NewReader(patch)
+	cmd.Env = env.extraEnv
+	cmd.Dir = env.buildDir
+
+	or, err := cmd.StdoutPipe()
+	if err != nil {
+		return exprcore.None, err
+	}
+
+	er, err := cmd.StderrPipe()
+	if err != nil {
+		return exprcore.None, err
+	}
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		br := bufio.NewReader(or)
+		for {
+			line, err := br.ReadString('\n')
+			if len(line) > 0 {
+				fmt.Printf("%s │ %s\n", env.outputPrefix, strings.TrimRight(line, " \n\t"))
+			}
+
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		br := bufio.NewReader(er)
+		for {
+			line, err := br.ReadString('\n')
+			if len(line) > 0 {
+				fmt.Printf("%s │ %s\n", env.outputPrefix, strings.TrimRight(line, " \n\t"))
+			}
+
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	err = cmd.Start()
+	if err != nil {
+		return nil, err
+	}
+
+	wg.Wait()
+
+	err = cmd.Wait()
+	if err != nil {
+		return nil, err
+	}
+
+	return exprcore.None, nil
+}
+
 func systemFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	env, ok := b.Receiver().(*RunCtx)
 	if !ok {
@@ -525,6 +795,11 @@ func systemFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple,
 		dir = filepath.Join(env.buildDir, dir)
 	}
 
+	if env.h != nil {
+		fmt.Fprintf(env.h, "system %s %s", dir, strings.Join(segments, "::"))
+		return exprcore.None, nil
+	}
+
 	var err error
 
 	exe := segments[0]
@@ -536,7 +811,7 @@ func systemFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple,
 		}
 	}
 
-	cmd := exec.Command(exe, segments[1:]...)
+	cmd := exec.CommandContext(env.ctx, exe, segments[1:]...)
 	cmd.Env = env.extraEnv
 	cmd.Dir = dir
 
@@ -649,6 +924,11 @@ func inreplaceFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tup
 
 	path := filepath.Join(env.buildDir, file)
 
+	if env.h != nil {
+		fmt.Fprintf(env.h, "inreplace %s %s %s", path, pattern, target)
+		return exprcore.None, nil
+	}
+
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
 		return exprcore.None, err
@@ -700,6 +980,11 @@ func inreplaceReFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.T
 
 	path := filepath.Join(env.buildDir, file)
 
+	if env.h != nil {
+		fmt.Fprintf(env.h, "inreplace-re %s %s %s", path, pattern, target)
+		return exprcore.None, nil
+	}
+
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
 		return exprcore.None, err
@@ -726,7 +1011,7 @@ func rmrfFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, k
 	var path string
 
 	err := exprcore.UnpackArgs(
-		"pkg", args, kwargs,
+		"rmrf", args, kwargs,
 		"path", &path,
 	)
 
@@ -744,7 +1029,14 @@ func rmrfFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, k
 		return noRunRC(b.Receiver())
 	}
 
-	err = os.RemoveAll(filepath.Join(env.buildDir, path))
+	target := filepath.Join(env.buildDir, path)
+
+	if env.h != nil {
+		fmt.Fprintf(env.h, "rmrf %s %s %s", path, target)
+		return exprcore.None, nil
+	}
+
+	err = os.RemoveAll(target)
 	if err != nil {
 		return exprcore.None, err
 	}
@@ -770,6 +1062,11 @@ func setEnvFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple,
 		return noRunRC(b.Receiver())
 	}
 
+	if env.h != nil {
+		fmt.Fprintf(env.h, "set-env %s %s", key, value)
+		return exprcore.None, nil
+	}
+
 	env.extraEnv = append(env.extraEnv, key+"="+value)
 
 	return exprcore.None, nil
@@ -791,6 +1088,15 @@ func appendEnvFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tup
 	env, ok := b.Receiver().(*RunCtx)
 	if !ok {
 		return noRunRC(b.Receiver())
+	}
+
+	if env.h != nil {
+		fmt.Fprintf(env.h, "append-env %s %s", key, value)
+		return exprcore.None, nil
+	}
+
+	if key == "PATH" {
+		env.path = env.path + ":" + value
 	}
 
 	prefix := key + "="
@@ -823,6 +1129,15 @@ func prependEnvFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tu
 	env, ok := b.Receiver().(*RunCtx)
 	if !ok {
 		return noRunRC(b.Receiver())
+	}
+
+	if env.h != nil {
+		fmt.Fprintf(env.h, "prepend-env %s %s", key, value)
+		return exprcore.None, nil
+	}
+
+	if key == "PATH" {
+		env.path = value + ":" + env.path
 	}
 
 	prefix := key + "="
@@ -875,6 +1190,11 @@ func linkFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, k
 
 			target := filepath.Join(target, filepath.Base(epath))
 
+			if env.h != nil {
+				fmt.Fprintf(env.h, "symlink %s %s", epath, target)
+				continue
+			}
+
 			env.L.Debug("symlinking", "old-path", epath, "new-path", target)
 
 			os.MkdirAll(filepath.Dir(target), 0755)
@@ -886,6 +1206,11 @@ func linkFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, k
 		}
 	case exprcore.String:
 		target := filepath.Join(target, filepath.Base(string(sv)))
+		if env.h != nil {
+			fmt.Fprintf(env.h, "symlink %s %s", string(sv), target)
+			break
+		}
+
 		env.L.Debug("symlinking", "old-path", string(sv), "new-path", target)
 
 		os.MkdirAll(filepath.Dir(target), 0755)
@@ -995,6 +1320,11 @@ func installFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple
 		target = filepath.Join(env.installDir, target)
 	}
 
+	if env.h != nil {
+		fmt.Fprintf(env.h, "install %s %s\n", pattern, target)
+		return exprcore.None, nil
+	}
+
 	var inst fileutils.Install
 	inst.L = env.L
 	inst.Dest = target
@@ -1002,41 +1332,6 @@ func installFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple
 	inst.Linked = symlink
 
 	return exprcore.None, inst.Install()
-}
-
-func globFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
-	var (
-		pattern string
-		fn      exprcore.Callable
-	)
-
-	err := exprcore.UnpackArgs(
-		"glob", args, kwargs,
-		"pattern", &pattern,
-		"fn", &fn,
-	)
-
-	if err != nil {
-		return exprcore.None, err
-	}
-
-	env, ok := b.Receiver().(*RunCtx)
-	if !ok {
-		return noRunRC(b.Receiver())
-	}
-
-	dir := filepath.Join(env.buildDir, filepath.Dir(pattern))
-
-	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if matched, _ := filepath.Match(pattern, path); matched {
-			_, err = exprcore.Call(thread, fn, exprcore.Tuple{exprcore.String(path)}, nil)
-			return err
-		}
-
-		return nil
-	})
-
-	return exprcore.None, nil
 }
 
 func writeFileFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
@@ -1061,6 +1356,11 @@ func writeFileFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tup
 
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(env.installDir, target)
+	}
+
+	if env.h != nil {
+		fmt.Fprintf(env.h, "write-file %s %s\n", target, data)
+		return exprcore.None, nil
 	}
 
 	f, err := os.Create(target)

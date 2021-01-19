@@ -44,6 +44,14 @@ func (u *UI) InstallPrologue(cfg *config.Config) error {
 	return nil
 }
 
+func (u *UI) ListDepedencies(pkgs []*ScriptPackage) {
+	fmt.Printf("Dependencies:\n")
+
+	for _, p := range pkgs {
+		fmt.Printf("  %s\n", p.ID())
+	}
+}
+
 type uiMarker struct{}
 
 func GetUI(ctx context.Context) *UI {

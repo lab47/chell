@@ -7,8 +7,10 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/hashicorp/go-hclog"
@@ -81,7 +83,16 @@ func install(c *cobra.Command, args []string) {
 		log.Fatal(err)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ch := make(chan os.Signal, 1)
+
+	go func() {
+		<-ch
+		cancel()
+	}()
+
+	signal.Notify(ch, os.Interrupt, os.Kill, syscall.SIGQUIT)
 
 	buildDir, err := ioutil.TempDir("", "chell-build")
 	if err != nil {
@@ -112,6 +123,10 @@ func install(c *cobra.Command, args []string) {
 		log.Print(err)
 		return
 	}
+
+	fmt.Printf("+ Built: %s:%s => %s\n", pkg.Name(), pkg.Version(), pkg.ID())
+
+	return
 
 	fmt.Printf("+ Adding packages to profile: %s\n", profileName)
 

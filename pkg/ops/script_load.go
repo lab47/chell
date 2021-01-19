@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/chell/pkg/data"
 	"github.com/lab47/exprcore/exprcore"
 	"github.com/mr-tron/base58"
 	"github.com/pkg/errors"
@@ -61,15 +62,28 @@ func loadedKey(name, ns string, args map[string]string, path string) string {
 type ScriptPackage struct {
 	loader *ScriptLoad
 
+	name      string
 	id        string
+	sig       string
 	repo      string
 	prototype *exprcore.Prototype
 
 	cs ScriptCalcSig
 
-	helpers exprcore.StringDict
+	helpers    exprcore.StringDict
+	helpersSum []byte
 
 	constraints map[string]string
+
+	PackageInfo *data.PackageInfo
+}
+
+func (s *ScriptPackage) Name() string {
+	return s.name
+}
+
+func (s *ScriptPackage) Version() string {
+	return s.cs.Version
 }
 
 // String returns the string representation of the value.
@@ -107,6 +121,10 @@ func (s *ScriptPackage) Hash() (uint32, error) {
 
 func (s *ScriptPackage) ID() string {
 	return s.id
+}
+
+func (s *ScriptPackage) Signature() string {
+	return s.sig
 }
 
 func (s *ScriptPackage) Repo() string {
@@ -248,6 +266,7 @@ func (s *ScriptLoad) Load(name string, opts ...Option) (*ScriptPackage, error) {
 		"file":   exprcore.NewBuiltin("file", s.fileFn),
 		"dir":    exprcore.NewBuiltin("dir", s.dirFn),
 		"inputs": exprcore.NewBuiltin("inputs", s.inputsFn),
+		"join":   exprcore.NewBuiltin("join", joinFn),
 	}
 
 	_, prog, err := exprcore.SourceProgram(name+".chell", data.Script(), vars.Has)
@@ -288,20 +307,12 @@ func (s *ScriptLoad) Load(name string, opts ...Option) (*ScriptPackage, error) {
 	}
 
 	sp = &ScriptPackage{
+		name:        name,
 		repo:        data.Repo(),
 		loader:      s,
 		constraints: lc.constraints,
+		prototype:   ppkg,
 	}
-
-	sp.cs.common.logger = s.common.logger
-
-	id, err := sp.cs.Calculate(ppkg, data, lc.constraints)
-	if err != nil {
-		return nil, err
-	}
-
-	sp.id = id
-	sp.prototype = ppkg
 
 	s.loaded[cacheKey] = sp
 
@@ -309,6 +320,16 @@ func (s *ScriptLoad) Load(name string, opts ...Option) (*ScriptPackage, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	sp.cs.common.logger = s.common.logger
+
+	sig, id, err := sp.cs.Calculate(ppkg, data, sp.helpersSum, lc.constraints)
+	if err != nil {
+		return nil, err
+	}
+
+	sp.sig = sig
+	sp.id = id
 
 	return sp, nil
 }
@@ -394,6 +415,7 @@ func (l *ScriptLoad) fileFn(thread *exprcore.Thread, b *exprcore.Builtin, args e
 		path, darwin, linux string
 		into                string
 		sum                 exprcore.Tuple
+		chdir               bool
 	)
 
 	if err := exprcore.UnpackArgs(
@@ -403,6 +425,7 @@ func (l *ScriptLoad) fileFn(thread *exprcore.Thread, b *exprcore.Builtin, args e
 		"darwin?", &darwin,
 		"linux?", &linux,
 		"into?", &into,
+		"chdir?", &chdir,
 	); err != nil {
 		return nil, err
 	}
@@ -465,6 +488,7 @@ func (l *ScriptLoad) fileFn(thread *exprcore.Thread, b *exprcore.Builtin, args e
 		sumType:  string(sumType),
 		sumValue: string(sumVal),
 		data:     data,
+		chdir:    chdir,
 	}, nil
 }
 
@@ -533,6 +557,20 @@ func (l *ScriptLoad) inputsFn(thread *exprcore.Thread, b *exprcore.Builtin, args
 	return sm, nil
 }
 
+func joinFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+	var parts []string
+
+	for _, a := range args {
+		if s, ok := a.(exprcore.String); ok {
+			parts = append(parts, string(s))
+		} else {
+			return nil, fmt.Errorf("join only accepts strings, got a %T", a)
+		}
+	}
+
+	return exprcore.String(filepath.Join(parts...)), nil
+}
+
 type ScriptFile struct {
 	logger hclog.Logger
 
@@ -540,6 +578,7 @@ type ScriptFile struct {
 	sumType  string
 	sumValue string
 	into     string
+	chdir    bool
 
 	dir string
 
@@ -659,6 +698,31 @@ func (l *ScriptLoad) loadHelpers(s *ScriptPackage, lctx *loadContext, name strin
 	}
 
 	s.helpers = gbls
+
+	var keys []string
+
+	for k := range gbls {
+		keys = append(keys, k)
+	}
+
+	sort.Strings(keys)
+
+	h, _ := blake2b.New256(nil)
+
+	for _, k := range keys {
+		v := gbls[k]
+
+		if fn, ok := v.(*exprcore.Function); ok {
+			d, err := fn.HashCode()
+			if err != nil {
+				return err
+			}
+
+			h.Write(d)
+		}
+	}
+
+	s.helpersSum = h.Sum(nil)
 
 	return nil
 }

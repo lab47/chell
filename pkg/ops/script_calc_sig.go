@@ -171,6 +171,7 @@ func (c *calcLogger) Write(b []byte) (int, error) {
 func (s *ScriptCalcSig) calcSig(
 	proto *exprcore.Prototype,
 	data ScriptData,
+	helperSum []byte,
 	constraints map[string]string,
 ) (string, error) {
 	if s.Name == "" {
@@ -208,12 +209,10 @@ func (s *ScriptCalcSig) calcSig(
 	}
 
 	if s.Install != nil {
-		codeHash, err := s.Install.HashCode()
+		err := s.callAsCalc(h)
 		if err != nil {
 			return "", err
 		}
-
-		h.Write(codeHash)
 	}
 
 	var depIds []string
@@ -229,6 +228,52 @@ func (s *ScriptCalcSig) calcSig(
 	}
 
 	return base58.Encode(hb.Sum(nil)), nil
+}
+
+func (s *ScriptCalcSig) callAsCalc(h io.Writer) error {
+	var rc RunCtx
+	rc.attrs = RunCtxFunctions
+
+	args := exprcore.Tuple{&rc}
+
+	var thread exprcore.Thread
+
+	thread.CallTrace = func(thread *exprcore.Thread, c exprcore.Callable, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+		switch v := c.(type) {
+		case *exprcore.Builtin:
+			rec := v.Receiver()
+			if rec == nil {
+				fmt.Printf("+ %s", v.Name())
+			} else {
+				fmt.Printf("+ %s.%s", rec.String(), v.Name())
+			}
+		case *exprcore.Function:
+			fmt.Printf("+ %s", v.Name())
+		default:
+			fmt.Printf("+ %#v", v)
+		}
+
+		fmt.Printf("(%s, ", args)
+
+		for _, p := range kwargs {
+			fmt.Printf("[%s] ", p.String())
+		}
+
+		fmt.Printf(")\n")
+
+		return nil, exprcore.CallContinue
+	}
+
+	fmt.Fprintf(h, "install fn\n")
+
+	rc.h = h
+
+	_, err := exprcore.Call(&thread, s.Install, args, nil)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (s *ScriptCalcSig) injectInputs(w io.Writer, data ScriptData) error {
@@ -298,12 +343,13 @@ var times int
 func (s *ScriptCalcSig) Calculate(
 	proto *exprcore.Prototype,
 	data ScriptData,
+	helperSum []byte,
 	constraints map[string]string,
-) (string, error) {
-	sig, err := s.calcSig(proto, data, constraints)
+) (string, string, error) {
+	sig, err := s.calcSig(proto, data, helperSum, constraints)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
-	return fmt.Sprintf("%s-%s-%s", sig, s.Name, s.Version), nil
+	return sig, fmt.Sprintf("%s-%s-%s", sig, s.Name, s.Version), nil
 }

@@ -131,3 +131,13 @@ func (o *Ops) CarUploadS3(bucket, dir string) (*CarUploadS3, error) {
 
 	return cu, nil
 }
+
+func (o *Ops) PackageDetectLibs() *PackageDetectLibs {
+	return &PackageDetectLibs{storeDir: o.storeDir}
+}
+
+func (o *Ops) ScriptAllDeps() *ScriptCalcDeps {
+	return &ScriptCalcDeps{
+		storeDir: o.storeDir,
+	}
+}

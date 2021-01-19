@@ -1,14 +1,12 @@
 package cmd
 
 import (
-	"fmt"
+	"log"
 	"os"
+	"path/filepath"
+	"strings"
 
-	"github.com/davecgh/go-spew/spew"
-	"github.com/hashicorp/go-hclog"
-	"github.com/lab47/chell/pkg/config"
-	"github.com/lab47/chell/pkg/loader"
-	"github.com/lab47/chell/pkg/profile"
+	"github.com/lab47/chell/pkg/ops"
 	"github.com/spf13/cobra"
 )
 
@@ -23,43 +21,30 @@ var (
 )
 
 func remove(c *cobra.Command, args []string) {
-	cfg, err := config.LoadConfig()
+	o, cfg, err := loadAPI()
 	if err != nil {
-		fmt.Printf("error loading config: %s\n", err)
-		os.Exit(1)
+		log.Fatal(err)
 	}
 
-	L := hclog.L()
+	sl := o.ScriptLoad()
 
-	loader, err := loader.NewLoader(L, cfg, cfg.Repo())
-	if err != nil {
-		fmt.Printf("error creating loader: %s\n", err)
-		os.Exit(1)
+	scriptArgs := make(map[string]string)
+
+	for _, a := range args[1:] {
+		idx := strings.IndexByte(a, '=')
+		if idx > -1 {
+			scriptArgs[a[:idx]] = a[idx+1:]
+		}
 	}
 
-	script, err := loader.LoadScript(args[0])
+	pkg, err := sl.Load(
+		args[0],
+		ops.WithArgs(scriptArgs),
+		ops.WithConstraints(cfg.Constraints()),
+	)
 	if err != nil {
-		fmt.Printf("error loading script: %s\n", err)
-		os.Exit(1)
+		log.Fatal(err)
 	}
 
-	spew.Dump(script.PackageProto())
-
-	prof, err := profile.OpenProfile(cfg, "")
-	if err != nil {
-		fmt.Printf("error opening profile: %s\n", err)
-		os.Exit(1)
-	}
-
-	name, err := script.StoreName()
-	if err != nil {
-		fmt.Printf("error reading store name: %s\n", err)
-		os.Exit(1)
-	}
-
-	err = prof.Remove(name)
-	if err != nil {
-		fmt.Printf("error installing into profile: %s\n", err)
-		os.Exit(1)
-	}
+	os.RemoveAll(filepath.Join(cfg.StorePath(), pkg.ID()))
 }

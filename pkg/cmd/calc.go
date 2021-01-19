@@ -74,3 +74,58 @@ func calc(c *cobra.Command, args []string) {
 	}
 
 }
+
+var (
+	calcLibsCmd = &cobra.Command{
+		Use:   "calc-libs",
+		Short: "Calculate what to libraries are used",
+		Long:  ``,
+		Args:  cobra.MinimumNArgs(1),
+		Run:   calcLibs,
+	}
+)
+
+func calcLibs(c *cobra.Command, args []string) {
+	o, cfg, err := loadAPI()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	sl := o.ScriptLoad()
+
+	scriptArgs := make(map[string]string)
+
+	for _, a := range args[1:] {
+		idx := strings.IndexByte(a, '=')
+		if idx > -1 {
+			scriptArgs[a[:idx]] = a[idx+1:]
+		}
+	}
+
+	ns, name := parseName(args[0])
+
+	pkg, err := sl.Load(
+		name,
+		ops.WithNamespace(ns),
+		ops.WithArgs(scriptArgs),
+		ops.WithConstraints(cfg.Constraints()),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	libs, err := o.PackageDetectLibs().Detect(pkg.ID())
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("Chell libs:\n")
+	for _, lib := range libs.ChellLibs {
+		fmt.Printf("- %s\n", lib)
+	}
+
+	fmt.Printf("System libs:\n")
+	for _, lib := range libs.SystemLibs {
+		fmt.Printf("- %s\n", lib)
+	}
+}

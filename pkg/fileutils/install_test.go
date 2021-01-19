@@ -151,4 +151,29 @@ func TestInstall(t *testing.T) {
 		assertFile(t, "b/nf", "this is a file")
 	})
 
+	t.Run("symlinks a specified file to a new location with a new name", func(t *testing.T) {
+		defer cleanup()
+
+		wf("a/file", "this is a file")
+		wf("a/sub/file", "this is a file also")
+
+		in := &Install{
+			L:       L,
+			Pattern: filepath.Join(tmpdira, "file"),
+			Dest:    filepath.Join(tmpdirb, "nf"),
+			Linked:  true,
+		}
+
+		err := in.Install()
+		require.NoError(t, err)
+
+		tp := filepath.Join(tmpdirb, "nf")
+
+		fi, err := os.Lstat(tp)
+		require.NoError(t, err)
+
+		assert.Equal(t, os.ModeSymlink, fi.Mode()&os.ModeType)
+		assertFile(t, "b/nf", "this is a file")
+	})
+
 }

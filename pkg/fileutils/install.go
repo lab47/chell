@@ -23,7 +23,18 @@ func (i *Install) Install() error {
 	_, err := os.Stat(i.Pattern)
 	if err == nil {
 		os.MkdirAll(filepath.Dir(i.Dest), 0755)
-		return i.copyEntry(i.Pattern, i.Dest)
+		if i.Linked {
+			i.L.Debug("symlink", "old", i.Pattern, "new", i.Dest)
+
+			oldRel, err := filepath.Rel(filepath.Dir(i.Dest), i.Pattern)
+			if err != nil {
+				oldRel = i.Pattern
+			}
+
+			return os.Symlink(oldRel, i.Dest)
+		} else {
+			return i.copyEntry(i.Pattern, i.Dest)
+		}
 	}
 
 	entries, err := filepath.Glob(i.Pattern)

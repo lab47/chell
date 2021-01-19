@@ -99,6 +99,7 @@ func init() {
 	rootCmd.AddCommand(openCmd)
 	rootCmd.AddCommand(buildCmd)
 	rootCmd.AddCommand(uploadCmd)
+	rootCmd.AddCommand(calcLibsCmd)
 }
 
 func er(msg interface{}) {
