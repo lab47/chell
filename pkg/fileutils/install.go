@@ -4,6 +4,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"time"
 
 	"github.com/hashicorp/go-hclog"
 )
@@ -13,6 +15,7 @@ type Install struct {
 	Pattern string
 	Dest    string
 	Linked  bool
+	ModeOr  os.FileMode
 }
 
 func (i *Install) Install() error {
@@ -99,9 +102,18 @@ func (i *Install) copyEntry(from, to string) error {
 		return err
 	}
 
+	defer func() {
+		// fix the times
+		os.Chtimes(to, time.Time{}, fi.ModTime())
+	}()
+
 	switch fi.Mode() & os.ModeType {
 	case 0: // regular file
-		tg, err := os.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
+		tg, err := os.OpenFile(
+			to,
+			os.O_WRONLY|os.O_CREATE|os.O_TRUNC,
+			fi.Mode().Perm()|i.ModeOr.Perm(),
+		)
 		if err != nil {
 			return err
 		}
@@ -118,27 +130,27 @@ func (i *Install) copyEntry(from, to string) error {
 		return nil
 	case os.ModeDir:
 		if _, err := os.Stat(to); err != nil {
-			err = os.Mkdir(to, fi.Mode().Perm())
+			err = os.Mkdir(to, fi.Mode().Perm()|i.ModeOr.Perm())
 			if err != nil {
 				return err
 			}
 		}
 
-		for {
-			names, err := f.Readdirnames(50)
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-
-				return err
+		entries, err := f.Readdirnames(-1)
+		if err != nil {
+			if err == io.EOF {
+				break
 			}
 
-			for _, name := range names {
-				err = i.copyEntry(filepath.Join(from, name), filepath.Join(to, name))
-				if err != nil {
-					return err
-				}
+			return err
+		}
+
+		sort.Strings(entries)
+
+		for _, name := range entries {
+			err = i.copyEntry(filepath.Join(from, name), filepath.Join(to, name))
+			if err != nil {
+				return err
 			}
 		}
 

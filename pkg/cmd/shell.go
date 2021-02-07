@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -18,10 +21,18 @@ var (
 		Use:   "shell",
 		Short: "Run a shell setup for the given package",
 		Long:  ``,
-		Args:  cobra.MinimumNArgs(1),
+		Args:  cobra.MinimumNArgs(0),
 		Run:   shell,
 	}
 )
+
+var shellFlags struct {
+	printEnv bool
+}
+
+func init() {
+	shellCmd.PersistentFlags().BoolVarP(&shellFlags.printEnv, "print-env", "E", false, "print the environment that would be added")
+}
 
 func shell(c *cobra.Command, args []string) {
 	o, cfg, err := loadAPI()
@@ -29,40 +40,68 @@ func shell(c *cobra.Command, args []string) {
 		log.Fatal(err)
 	}
 
-	sl := o.ScriptLoad()
+	pl := o.ProjectLoad()
 
-	scriptArgs := make(map[string]string)
-
-	for _, a := range args[1:] {
-		idx := strings.IndexByte(a, '=')
-		if idx > -1 {
-			scriptArgs[a[:idx]] = a[idx+1:]
-		}
+	r, err := os.Open("project.chell")
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	ns, name := parseName(args[0])
-
-	pkg, err := sl.Load(
-		name,
-		ops.WithNamespace(ns),
-		ops.WithArgs(scriptArgs),
+	proj, err := pl.LoadScript(r,
 		ops.WithConstraints(cfg.Constraints()),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	var path []string
+	pci := o.PackageCalcInstall()
 
-	deps, err := o.ScriptAllDeps().RuntimeDeps(pkg)
+	toInstall, err := pci.CalculateSet(proj.ToInstall)
 	if err != nil {
-		log.Panic(err)
+		log.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ch := make(chan os.Signal, 1)
+
+	go func() {
+		<-ch
+		cancel()
+	}()
+
+	signal.Notify(ch, os.Interrupt, os.Kill, syscall.SIGQUIT)
+
+	ui := ops.GetUI(ctx)
+	ui.InstallPrologue(cfg)
+
+	buildDir, err := ioutil.TempDir("", "chell-build")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer os.RemoveAll(buildDir)
+
+	ienv := &ops.InstallEnv{
+		BuildDir:   buildDir,
+		StoreDir:   StoreDir,
+		StartShell: dev,
+	}
+
+	install := o.PackagesInstall(ienv)
+
+	err = install.Install(ctx, toInstall)
+	if err != nil {
+		log.Print(err)
 		return
 	}
 
-	binPath := filepath.Join(cfg.StorePath(), pkg.ID(), "bin")
-	if _, err := os.Stat(binPath); err == nil {
-		path = append(path, binPath)
+	var path []string
+
+	deps, err := o.ScriptAllDeps().EvalDeps(proj.ToInstall)
+	if err != nil {
+		log.Panic(err)
+		return
 	}
 
 	for _, dep := range deps {
@@ -79,6 +118,11 @@ func shell(c *cobra.Command, args []string) {
 		curPath = pkgPath + ":" + curPath
 	} else {
 		curPath = pkgPath
+	}
+
+	if shellFlags.printEnv {
+		fmt.Printf("PATH=" + curPath)
+		os.Exit(0)
 	}
 
 	os.Setenv("PATH", curPath)

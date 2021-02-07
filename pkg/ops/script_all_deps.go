@@ -37,15 +37,44 @@ func (i *ScriptCalcDeps) RuntimeDeps(pkg *ScriptPackage) ([]*ScriptPackage, erro
 		return nil, err
 	}
 
-	return i.walkFromDeps(direct)
+	seen := make(map[string]struct{})
+	return i.walkFromDeps(direct, seen)
+}
+
+func (i *ScriptCalcDeps) EvalDeps(pkgs []*ScriptPackage) ([]*ScriptPackage, error) {
+	seen := make(map[string]struct{})
+
+	var output []*ScriptPackage
+
+	for _, pkg := range pkgs {
+		if _, ok := seen[pkg.ID()]; ok {
+			continue
+		}
+
+		output = append(output, pkg)
+
+		direct, err := i.pkgRuntimeDeps(pkg)
+		if err != nil {
+			return nil, err
+		}
+
+		out, err := i.walkFromDeps(direct, seen)
+		if err != nil {
+			return nil, err
+		}
+
+		output = append(output, out...)
+	}
+
+	return output, nil
 }
 
 func (i *ScriptCalcDeps) BuildDeps(pkg *ScriptPackage) ([]*ScriptPackage, error) {
-	return i.walkFromDeps(pkg.Dependencies())
+	seen := make(map[string]struct{})
+	return i.walkFromDeps(pkg.Dependencies(), seen)
 }
 
-func (i *ScriptCalcDeps) walkFromDeps(deps []*ScriptPackage) ([]*ScriptPackage, error) {
-	seen := make(map[string]struct{})
+func (i *ScriptCalcDeps) walkFromDeps(deps []*ScriptPackage, seen map[string]struct{}) ([]*ScriptPackage, error) {
 
 	var output []*ScriptPackage
 

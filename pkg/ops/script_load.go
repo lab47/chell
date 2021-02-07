@@ -260,13 +260,21 @@ func (s *ScriptLoad) Load(name string, opts ...Option) (*ScriptPackage, error) {
 		args.SetKey(exprcore.String(k), exprcore.String(v))
 	}
 
+	sysobj := exprcore.FromStringDict(exprcore.Root, exprcore.StringDict{
+		"platform": exprcore.String(runtime.GOARCH),
+	})
+
 	vars := exprcore.StringDict{
-		"pkg":    pkgobj,
-		"args":   args,
-		"file":   exprcore.NewBuiltin("file", s.fileFn),
-		"dir":    exprcore.NewBuiltin("dir", s.dirFn),
-		"inputs": exprcore.NewBuiltin("inputs", s.inputsFn),
-		"join":   exprcore.NewBuiltin("join", joinFn),
+		"pkg":      pkgobj,
+		"args":     args,
+		"file":     exprcore.NewBuiltin("file", s.fileFn),
+		"dir":      exprcore.NewBuiltin("dir", s.dirFn),
+		"inputs":   exprcore.NewBuiltin("inputs", s.inputsFn),
+		"join":     exprcore.NewBuiltin("join", joinFn),
+		"fmt":      exprcore.NewBuiltin("fmt", fmtFn),
+		"basename": exprcore.NewBuiltin("basename", basenameFn),
+		"fetch":    exprcore.NewBuiltin("fetch", s.fetchFn),
+		"sys":      sysobj,
 	}
 
 	_, prog, err := exprcore.SourceProgram(name+".chell", data.Script(), vars.Has)
@@ -409,6 +417,24 @@ func (s *ScriptLoad) importPkg(thread *exprcore.Thread, lctx *loadContext, ns, n
 }
 
 var ErrSumFormat = fmt.Errorf("sum must a tuple with (sum-type, sum)")
+
+func (l *ScriptLoad) idFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+	if len(args) > 0 {
+		return nil, fmt.Errorf("only keyword args are supported")
+	}
+
+	sort.Slice(kwargs, func(i, j int) bool {
+		return kwargs[i].String() < kwargs[j].String()
+	})
+
+	h, _ := blake2b.New256(nil)
+
+	for _, item := range kwargs {
+		fmt.Fprintf(h, "%s\n", item.String())
+	}
+
+	return exprcore.String(base58.Encode(h.Sum(nil))), nil
+}
 
 func (l *ScriptLoad) fileFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	var (
@@ -557,6 +583,108 @@ func (l *ScriptLoad) inputsFn(thread *exprcore.Thread, b *exprcore.Builtin, args
 	return sm, nil
 }
 
+func (l *ScriptLoad) fetchFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+	var (
+		fn    exprcore.Callable
+		sum   exprcore.Value
+		deps  *exprcore.List
+		ftype exprcore.String
+	)
+
+	if err := exprcore.UnpackArgs(
+		"fetch", args, kwargs,
+		"fetch", &fn,
+		"hash?", &sum,
+		"dependencies?", &deps,
+		"type?", &ftype,
+	); err != nil {
+		return nil, err
+	}
+
+	name := "fetch"
+
+	if ftype != "" {
+		name = name + "-" + string(ftype)
+	}
+
+	inst, err := NewInstance(name, fn)
+	if err != nil {
+		return nil, err
+	}
+
+	sumType, sumValue, err := DecodeSum(sum)
+	if err != nil {
+		return nil, err
+	}
+
+	h, _ := blake2b.New256(nil)
+
+	fmt.Fprintln(h, name)
+
+	fmt.Fprintf(h, "%s-%s", sumType, sumValue)
+
+	inst.Signature = base58.Encode(h.Sum(nil))
+
+	if deps != nil {
+		var scripts []*ScriptPackage
+
+		iter := deps.Iterate()
+		defer iter.Done()
+		var x exprcore.Value
+		for iter.Next(&x) {
+			if script, ok := x.(*ScriptPackage); ok {
+				scripts = append(scripts, script)
+			}
+		}
+
+		inst.Dependencies = scripts
+	}
+
+	return inst, nil
+}
+
+func fmtFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+	var format string
+
+	if len(kwargs) > 1 {
+		return nil, fmt.Errorf("fmt: too many keyword args")
+	}
+
+	if len(kwargs) == 1 {
+		pair := kwargs[0]
+		if pair[0].(exprcore.String) == "format" {
+			if str, ok := pair[1].(exprcore.String); ok {
+				format = string(str)
+			}
+		} else {
+			return nil, fmt.Errorf("fmt: unknown argument '%s'", pair[0])
+		}
+	} else {
+		if str, ok := args[0].(exprcore.String); ok {
+			format = string(str)
+		} else {
+			return nil, fmt.Errorf("fmt: format must be a string")
+		}
+
+		args = args[1:]
+	}
+
+	var parts []interface{}
+
+	for _, a := range args {
+		switch v := a.(type) {
+		case exprcore.String:
+			parts = append(parts, string(v))
+		case exprcore.Int:
+			parts = append(parts, v.String())
+		default:
+			return nil, fmt.Errorf("fmt only accepts strings and ints, got a %T", a)
+		}
+	}
+
+	return exprcore.String(fmt.Sprintf(format, parts...)), nil
+}
+
 func joinFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
 	var parts []string
 
@@ -569,6 +697,18 @@ func joinFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, k
 	}
 
 	return exprcore.String(filepath.Join(parts...)), nil
+}
+
+func basenameFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+
+	var path string
+
+	if err := exprcore.UnpackArgs(
+		"basename", args, kwargs, "path", &path); err != nil {
+		return nil, err
+	}
+
+	return exprcore.String(filepath.Base(path)), nil
 }
 
 type ScriptFile struct {

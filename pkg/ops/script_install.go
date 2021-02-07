@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"hash"
 	"io"
@@ -20,8 +21,10 @@ import (
 	"github.com/hashicorp/go-getter"
 	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/chell/pkg/cleanhttp"
+	"github.com/lab47/chell/pkg/evt"
 	"github.com/lab47/chell/pkg/fileutils"
 	"github.com/lab47/exprcore/exprcore"
+	"github.com/mr-tron/base58"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/blake2b"
 )
@@ -30,6 +33,16 @@ type ScriptInstall struct {
 	common
 
 	pkg *ScriptPackage
+}
+
+func (i *ScriptInstall) setupInstance(ui *UI, ienv *InstallEnv, dir string, in ScriptInput) error {
+	var inst fileutils.Install
+
+	inst.Pattern = filepath.Join(ienv.StoreDir, in.Instance.ID())
+	inst.Dest = filepath.Join(dir, in.Name)
+	inst.ModeOr = os.FileMode(0222)
+
+	return inst.Install()
 }
 
 func (i *ScriptInstall) setupInputFile(ui *UI, dir string, in ScriptInput) error {
@@ -165,9 +178,14 @@ func (i *ScriptInstall) setupInputDir(ui *UI, dir string, in ScriptInput) error 
 	return inst.Install()
 }
 
-func (i *ScriptInstall) setupInputs(ui *UI, dir string) error {
+func (i *ScriptInstall) setupInputs(ui *UI, ienv *InstallEnv, dir string) error {
 	for _, in := range i.pkg.cs.Inputs {
-		if in.Data.dir != "" {
+		if in.Instance != nil {
+			err := i.setupInstance(ui, ienv, dir, in)
+			if err != nil {
+				return err
+			}
+		} else if in.Data.dir != "" {
 			err := i.setupInputDir(ui, dir, in)
 			if err != nil {
 				return err
@@ -206,7 +224,7 @@ func (i *ScriptInstall) Install(ctx context.Context, ienv *InstallEnv) error {
 		return err
 	}
 
-	err = i.setupInputs(ui, buildDir)
+	err = i.setupInputs(ui, ienv, buildDir)
 	if err != nil {
 		return track(err)
 	}
@@ -217,7 +235,7 @@ func (i *ScriptInstall) Install(ctx context.Context, ienv *InstallEnv) error {
 		primary = &i.pkg.cs.Inputs[0]
 	} else {
 		for _, i := range i.pkg.cs.Inputs {
-			if i.Data.chdir {
+			if i.Data != nil && i.Data.chdir {
 				primary = &i
 				break
 			}
@@ -231,9 +249,20 @@ func (i *ScriptInstall) Install(ctx context.Context, ienv *InstallEnv) error {
 
 		sf, err := ioutil.ReadDir(checkDir)
 		if err == nil {
+			var (
+				ent os.FileInfo
+				cnt int
+			)
+
+			for _, e := range sf {
+				if e.Name()[0] != '.' {
+					cnt++
+					ent = e
+				}
+			}
 			runDir = checkDir
-			if len(sf) == 1 && sf[0].IsDir() {
-				runDir = filepath.Join(runDir, sf[0].Name())
+			if cnt == 1 && ent.IsDir() {
+				runDir = filepath.Join(runDir, ent.Name())
 			}
 		}
 	}
@@ -400,6 +429,8 @@ type RunCtx struct {
 	outputPrefix string
 
 	attrs exprcore.StringDict
+
+	top *evt.Statements
 }
 
 // String returns the string representation of the value.
@@ -457,6 +488,10 @@ func (r *RunCtx) AttrNames() []string {
 	return append([]string{"prefix", "build", "top"}, r.attrs.AttrNames()...)
 }
 
+func (r *RunCtx) stmt(n evt.EVTNode) {
+	r.top.Statements = append(r.top.Statements, n)
+}
+
 func noRunRC(v interface{}) (exprcore.Value, error) {
 	return nil, fmt.Errorf("no run context bound available: %T", v)
 }
@@ -476,7 +511,32 @@ var RunCtxFunctions = exprcore.StringDict{
 	"install_files": exprcore.NewBuiltin("install_files", installFn),
 	"write_file":    exprcore.NewBuiltin("write_file", writeFileFn),
 	"chdir":         exprcore.NewBuiltin("chdir", chdirFn),
+	"set_root":      exprcore.NewBuiltin("set_root", setRootFn),
 	"mkdir":         exprcore.NewBuiltin("mkdir", mkdirFn),
+	"download":      exprcore.NewBuiltin("download", downloadFn),
+	"unpack":        exprcore.NewBuiltin("unpack", unpackFn),
+}
+
+func setRootFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+	env, ok := b.Receiver().(*RunCtx)
+	if !ok {
+		return noRunRC(b.Receiver())
+	}
+
+	var dir string
+
+	if err := exprcore.UnpackArgs(
+		"set_root", args, kwargs,
+		"dir", &dir,
+	); err != nil {
+		return nil, err
+	}
+
+	env.top.Statements = append(env.top.Statements, &evt.SetRoot{
+		Dir: dir,
+	})
+
+	return exprcore.None, nil
 }
 
 func chdirFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
@@ -498,21 +558,25 @@ func chdirFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, 
 		return nil, err
 	}
 
-	if env.h != nil {
-		fmt.Fprintf(env.h, "chdir %s\n", dir)
-		// Because chdir is pure, run it so we can capture the effects
-		// of the lambda
-	}
-
-	old := env.buildDir
-
+	old := env.top
 	defer func() {
-		env.buildDir = old
+		env.top = old
 	}()
 
-	env.buildDir = filepath.Join(env.buildDir, dir)
+	var top evt.Statements
+	env.top = &top
 
-	return exprcore.Call(thread, fn, exprcore.Tuple{}, nil)
+	n, err := exprcore.Call(thread, fn, exprcore.Tuple{}, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	old.Statements = append(old.Statements, &evt.ChangeDir{
+		Dir:  dir,
+		Body: &top,
+	})
+
+	return n, err
 }
 
 func mkdirFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
@@ -532,17 +596,9 @@ func mkdirFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, 
 		return nil, err
 	}
 
-	dir = filepath.Join(env.buildDir, dir)
-
-	if env.h != nil {
-		fmt.Fprintf(env.h, "mkdir %s\n", dir)
-		return exprcore.None, nil
-	}
-
-	err := os.MkdirAll(dir, 0755)
-	if err != nil {
-		return nil, err
-	}
+	env.stmt(&evt.MakeDir{
+		Dir: dir,
+	})
 
 	return exprcore.None, nil
 }
@@ -603,72 +659,9 @@ func shellFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, 
 		return nil, err
 	}
 
-	if env.h != nil {
-		fmt.Fprintf(env.h, "shell %s\n", code)
-		return exprcore.None, nil
-	}
-
-	cmd := exec.Command("bash")
-	cmd.Stdin = strings.NewReader(code)
-	cmd.Env = env.extraEnv
-	cmd.Dir = env.buildDir
-
-	or, err := cmd.StdoutPipe()
-	if err != nil {
-		return exprcore.None, err
-	}
-
-	er, err := cmd.StderrPipe()
-	if err != nil {
-		return exprcore.None, err
-	}
-
-	var wg sync.WaitGroup
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-
-		br := bufio.NewReader(or)
-		for {
-			line, err := br.ReadString('\n')
-			if len(line) > 0 {
-				fmt.Printf("%s │ %s\n", env.outputPrefix, strings.TrimRight(line, " \n\t"))
-			}
-
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		br := bufio.NewReader(er)
-		for {
-			line, err := br.ReadString('\n')
-			if len(line) > 0 {
-				fmt.Printf("%s │ %s\n", env.outputPrefix, strings.TrimRight(line, " \n\t"))
-			}
-
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	err = cmd.Start()
-	if err != nil {
-		return nil, err
-	}
-
-	wg.Wait()
-
-	err = cmd.Wait()
-	if err != nil {
-		return nil, err
-	}
+	env.stmt(&evt.Shell{
+		Code: code,
+	})
 
 	return exprcore.None, nil
 }
@@ -688,72 +681,9 @@ func patchFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, 
 		return nil, err
 	}
 
-	if env.h != nil {
-		fmt.Fprintf(env.h, "patch %s\n", args)
-		return exprcore.None, nil
-	}
-
-	cmd := exec.Command("patch", "-p1")
-	cmd.Stdin = strings.NewReader(patch)
-	cmd.Env = env.extraEnv
-	cmd.Dir = env.buildDir
-
-	or, err := cmd.StdoutPipe()
-	if err != nil {
-		return exprcore.None, err
-	}
-
-	er, err := cmd.StderrPipe()
-	if err != nil {
-		return exprcore.None, err
-	}
-
-	var wg sync.WaitGroup
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-
-		br := bufio.NewReader(or)
-		for {
-			line, err := br.ReadString('\n')
-			if len(line) > 0 {
-				fmt.Printf("%s │ %s\n", env.outputPrefix, strings.TrimRight(line, " \n\t"))
-			}
-
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		br := bufio.NewReader(er)
-		for {
-			line, err := br.ReadString('\n')
-			if len(line) > 0 {
-				fmt.Printf("%s │ %s\n", env.outputPrefix, strings.TrimRight(line, " \n\t"))
-			}
-
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	err = cmd.Start()
-	if err != nil {
-		return nil, err
-	}
-
-	wg.Wait()
-
-	err = cmd.Wait()
-	if err != nil {
-		return nil, err
-	}
+	env.stmt(&evt.Patch{
+		Patch: patch,
+	})
 
 	return exprcore.None, nil
 }
@@ -788,6 +718,13 @@ func systemFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple,
 			dir = string(s)
 		}
 	}
+
+	env.top.Statements = append(env.top.Statements, &evt.SystemNode{
+		Arguments: segments,
+		Dir:       dir,
+	})
+
+	return exprcore.None, nil
 
 	if dir == "" {
 		dir = env.buildDir
@@ -1288,6 +1225,176 @@ func writeNewHardLink(fpath string, target string) error {
 		return fmt.Errorf("%s: making hard link for: %v", fpath, err)
 	}
 	return nil
+}
+
+func unpackFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+	var path, output string
+
+	if err := exprcore.UnpackArgs(
+		"unpack", args, kwargs,
+		"path", &path,
+		"output?", &output,
+	); err != nil {
+		return nil, err
+	}
+
+	env, ok := b.Receiver().(*RunCtx)
+	if !ok {
+		return noRunRC(b.Receiver())
+	}
+
+	if env.h != nil {
+		fmt.Fprintf(env.h, "unpack %s", path)
+		return exprcore.None, nil
+	}
+
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(env.buildDir, path)
+	}
+
+	var (
+		archive string
+		dec     getter.Decompressor
+	)
+
+	matchingLen := 0
+	for k := range getter.Decompressors {
+		if strings.HasSuffix(path, "."+k) && len(k) > matchingLen {
+			archive = k
+			matchingLen = len(k)
+		}
+	}
+
+	if output == "" {
+		output = filepath.Dir(path)
+	}
+
+	dec, ok = getter.Decompressors[archive]
+	if !ok {
+		return nil, fmt.Errorf("No known decompressor for path: %s", path)
+	}
+
+	target := output
+
+	if _, err := os.Stat(target); err != nil {
+		return nil, errors.Wrapf(err, "target missing")
+	}
+
+	err := dec.Decompress(target, path, true, 0)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to decompress %s", path)
+	}
+
+	return exprcore.None, nil
+}
+
+func downloadFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+	var (
+		url, path string
+		sum       exprcore.Value
+	)
+
+	err := exprcore.UnpackArgs(
+		"download", args, kwargs,
+		"url", &url,
+		"path", &path,
+		"sum?", &sum,
+	)
+
+	if err != nil {
+		return exprcore.None, err
+	}
+
+	env, ok := b.Receiver().(*RunCtx)
+	if !ok {
+		return noRunRC(b.Receiver())
+	}
+
+	if env.h != nil {
+		if sum != nil {
+			st, sv, err := DecodeSum(sum)
+			if err == nil {
+				fmt.Fprintf(env.h, "sum %s %s", st, sv)
+				return exprcore.None, nil
+			}
+		}
+
+		fmt.Fprintf(env.h, "download %s", url)
+		return exprcore.None, nil
+	}
+
+	resp, err := cleanhttp.Get(url)
+	if err != nil {
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(env.buildDir, path)
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, err
+	}
+
+	defer f.Close()
+
+	if sum == nil {
+		_, err = io.Copy(f, resp.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		return exprcore.None, nil
+	}
+
+	var (
+		w  io.Writer
+		h  hash.Hash
+		sv []byte
+	)
+
+	st, svs, err := DecodeSum(sum)
+
+	switch st {
+	case "b2":
+		h, _ = blake2b.New256(nil)
+		w = io.MultiWriter(f, h)
+		sv, err = base58.Decode(svs)
+		if err != nil {
+			return nil, err
+		}
+	case "sha256":
+		sv, err = hex.DecodeString(svs)
+		if err != nil {
+			return nil, err
+		}
+		h = sha256.New()
+		w = io.MultiWriter(f, h)
+	case "etag":
+		w = f
+		// ok
+	default:
+		return nil, fmt.Errorf("unknown sum type: %s", st)
+	}
+
+	io.Copy(w, resp.Body)
+
+	switch st {
+	case "etag":
+		if CompareEtag(svs, resp.Header.Get("Etag")) {
+			return nil, fmt.Errorf("bad etag sum: %s (%s <> %s)",
+				path, svs, resp.Header.Get("Etag"))
+		}
+	default:
+		if !bytes.Equal(sv, h.Sum(nil)) {
+			return nil, fmt.Errorf("bad sum: %s", path)
+		}
+	}
+
+	return exprcore.None, nil
 }
 
 func installFn(thread *exprcore.Thread, b *exprcore.Builtin, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {

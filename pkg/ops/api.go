@@ -3,7 +3,6 @@ package ops
 import (
 	"crypto/ed25519"
 	"os"
-	"path/filepath"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -42,24 +41,22 @@ func NewOps(logger hclog.Logger, cfg *config.Config) (*Ops, error) {
 }
 
 func (o *Ops) findConfig() error {
-	cur := ""
-
-	f, err := os.Open(filepath.Join(cur, "config.chell"))
-	if err != nil {
-		return err
-	}
-
-	defer f.Close()
-
 	var cl ConfigLoad
+	cl.load = o.ScriptLoad()
 
-	cfg, err := cl.Load(f)
+	cfg, err := cl.LoadConfig("")
 	if err != nil {
 		return err
 	}
 
 	o.cfg = cfg
 	return nil
+}
+
+func (o *Ops) ProjectLoad() *ConfigLoad {
+	var cl ConfigLoad
+	cl.load = o.ScriptLoad()
+	return &cl
 }
 
 func (o *Ops) ScriptLoad() *ScriptLoad {

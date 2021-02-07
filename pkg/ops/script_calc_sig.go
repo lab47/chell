@@ -18,8 +18,9 @@ import (
 )
 
 type ScriptInput struct {
-	Name string
-	Data *ScriptFile
+	Name     string
+	Data     *ScriptFile
+	Instance *Instance
 }
 
 type ScriptCalcSig struct {
@@ -31,6 +32,7 @@ type ScriptCalcSig struct {
 	Hook         *exprcore.Function
 	Inputs       []ScriptInput
 	Dependencies []*ScriptPackage
+	Instances    []*Instance
 }
 
 func (s *ScriptCalcSig) extract(proto *exprcore.Prototype) error {
@@ -114,6 +116,11 @@ func (s *ScriptCalcSig) processInput(val exprcore.Value) error {
 			Name: "source",
 			Data: v,
 		})
+	case *Instance:
+		inputs = append(inputs, ScriptInput{
+			Name:     "source",
+			Instance: v,
+		})
 	case *exprcore.Dict:
 		for _, i := range v.Items() {
 			key, ok := i.Index(0).(exprcore.String)
@@ -123,12 +130,18 @@ func (s *ScriptCalcSig) processInput(val exprcore.Value) error {
 
 			dv := i.Index(1)
 
-			if f, ok := dv.(*ScriptFile); ok {
+			switch f := dv.(type) {
+			case *ScriptFile:
 				inputs = append(inputs, ScriptInput{
 					Name: string(key),
 					Data: f,
 				})
-			} else {
+			case *Instance:
+				inputs = append(inputs, ScriptInput{
+					Name:     string(key),
+					Instance: f,
+				})
+			default:
 				return fmt.Errorf("unsupported type in inputs: %T", dv)
 			}
 		}
@@ -202,14 +215,16 @@ func (s *ScriptCalcSig) calcSig(
 	}
 
 	if s.Inputs != nil {
-		err := s.injectInputs(h, data)
+		instances, err := s.injectInputs(h, data)
 		if err != nil {
 			return "", err
 		}
+
+		s.Instances = instances
 	}
 
 	if s.Install != nil {
-		err := s.callAsCalc(h)
+		err := s.callAsCalc(s.Install, h)
 		if err != nil {
 			return "", err
 		}
@@ -230,7 +245,7 @@ func (s *ScriptCalcSig) calcSig(
 	return base58.Encode(hb.Sum(nil)), nil
 }
 
-func (s *ScriptCalcSig) callAsCalc(h io.Writer) error {
+func (s *ScriptCalcSig) callAsCalc(fn exprcore.Value, h io.Writer) error {
 	var rc RunCtx
 	rc.attrs = RunCtxFunctions
 
@@ -238,37 +253,39 @@ func (s *ScriptCalcSig) callAsCalc(h io.Writer) error {
 
 	var thread exprcore.Thread
 
-	thread.CallTrace = func(thread *exprcore.Thread, c exprcore.Callable, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
-		switch v := c.(type) {
-		case *exprcore.Builtin:
-			rec := v.Receiver()
-			if rec == nil {
+	/*
+		thread.CallTrace = func(thread *exprcore.Thread, c exprcore.Callable, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
+			switch v := c.(type) {
+			case *exprcore.Builtin:
+				rec := v.Receiver()
+				if rec == nil {
+					fmt.Printf("+ %s", v.Name())
+				} else {
+					fmt.Printf("+ %s.%s", rec.String(), v.Name())
+				}
+			case *exprcore.Function:
 				fmt.Printf("+ %s", v.Name())
-			} else {
-				fmt.Printf("+ %s.%s", rec.String(), v.Name())
+			default:
+				fmt.Printf("+ %#v", v)
 			}
-		case *exprcore.Function:
-			fmt.Printf("+ %s", v.Name())
-		default:
-			fmt.Printf("+ %#v", v)
+
+			fmt.Printf("(%s, ", args)
+
+			for _, p := range kwargs {
+				fmt.Printf("[%s] ", p.String())
+			}
+
+			fmt.Printf(")\n")
+
+			return nil, exprcore.CallContinue
 		}
-
-		fmt.Printf("(%s, ", args)
-
-		for _, p := range kwargs {
-			fmt.Printf("[%s] ", p.String())
-		}
-
-		fmt.Printf(")\n")
-
-		return nil, exprcore.CallContinue
-	}
+	*/
 
 	fmt.Fprintf(h, "install fn\n")
 
 	rc.h = h
 
-	_, err := exprcore.Call(&thread, s.Install, args, nil)
+	_, err := exprcore.Call(&thread, fn, args, nil)
 	if err != nil {
 		return err
 	}
@@ -276,21 +293,51 @@ func (s *ScriptCalcSig) callAsCalc(h io.Writer) error {
 	return nil
 }
 
-func (s *ScriptCalcSig) injectInputs(w io.Writer, data ScriptData) error {
+func (s *ScriptCalcSig) calcInstance(inst *Instance) error {
+	h, _ := blake2b.New256(nil)
+
+	err := s.callAsCalc(inst.Fn, h)
+	if err != nil {
+		return err
+	}
+
+	inst.Signature = base58.Encode(h.Sum(nil))
+
+	return nil
+}
+
+func (s *ScriptCalcSig) injectInputs(w io.Writer, data ScriptData) ([]*Instance, error) {
+	var instances []*Instance
+
 	for _, i := range s.Inputs {
+		if i.Instance != nil {
+			if i.Instance.Signature == "" {
+				err := s.calcInstance(i.Instance)
+				if err != nil {
+					return nil, err
+				}
+			}
+
+			fmt.Fprintf(w, "instance %s-%s-%s\n",
+				i.Instance.Name, i.Instance.Version, i.Instance.Signature)
+
+			instances = append(instances, i.Instance)
+			continue
+		}
+
 		algo, h, ok := s.hashPath(i.Data, data)
 		if !ok {
-			return fmt.Errorf("missing sum for input: %s", i.Data.path)
+			return nil, fmt.Errorf("missing sum for input: %s", i.Data.path)
 		}
 
 		fmt.Fprintf(w, "path: %s\nalgo: %s\n", i.Data.path, algo)
 		_, err := w.Write(h)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	return nil
+	return instances, nil
 }
 
 func (s *ScriptCalcSig) hashPath(sf *ScriptFile, data ScriptData) (string, []byte, bool) {

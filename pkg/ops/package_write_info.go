@@ -52,15 +52,22 @@ func (p *PackageWriteInfo) Write(pkg *ScriptPackage) (*data.PackageInfo, error) 
 
 	for _, input := range pkg.cs.Inputs {
 		d := &data.PackageInput{
-			Name:    input.Name,
-			SumType: input.Data.sumType,
-			Sum:     input.Data.sumValue,
+			Name: input.Name,
 		}
 
-		if input.Data.dir != "" {
-			d.Dir = input.Data.dir
-		} else {
-			d.Path = input.Data.path
+		if input.Data != nil {
+			d.SumType = input.Data.sumType
+			d.Sum = input.Data.sumValue
+		}
+
+		if input.Data != nil {
+			if input.Data.dir != "" {
+				d.Dir = input.Data.dir
+			} else {
+				d.Path = input.Data.path
+			}
+		} else if input.Instance != nil {
+			d.Id = input.Instance.ID()
 		}
 
 		inputs = append(inputs, d)

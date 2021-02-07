@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/lab47/chell/pkg/data"
+	"github.com/lab47/exprcore/exprcore"
 	"github.com/pkg/errors"
 )
 
@@ -85,7 +86,7 @@ func (p *PackageCalcInstall) consider(
 
 	pti.PackageIDs = append(pti.PackageIDs, pkg.ID())
 
-	if p.carLookup != nil {
+	if p.carLookup != nil && pkg.Repo() != "" {
 		carData, err := p.carLookup.Lookup(pkg.Repo(), pkg.ID())
 		if err != nil {
 			return errors.Wrapf(err, "error looking up car: %s/%s", pkg.Repo(), pkg.ID())
@@ -142,6 +143,28 @@ func (p *PackageCalcInstall) consider(
 		seen[dep.ID()] = 1
 
 		err = p.consider(dep, pti, seen)
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, dep := range pkg.cs.Instances {
+		pti.Dependencies[pkg.ID()] = append(pti.Dependencies[pkg.ID()], dep.ID())
+		if _, ok := seen[dep.ID()]; ok {
+			seen[dep.ID()]++
+			continue
+		}
+
+		seen[dep.ID()] = 1
+
+		sp := &ScriptPackage{
+			id: dep.ID(),
+		}
+
+		sp.cs.Dependencies = dep.Dependencies
+		sp.cs.Install = dep.Fn.(*exprcore.Function)
+
+		err = p.consider(sp, pti, seen)
 		if err != nil {
 			return err
 		}
@@ -204,19 +227,24 @@ func (p *PackageCalcInstall) considerCarDep(
 }
 
 func (p *PackageCalcInstall) Calculate(pkg *ScriptPackage) (*PackagesToInstall, error) {
+	return p.CalculateSet([]*ScriptPackage{pkg})
+}
+
+func (p *PackageCalcInstall) CalculateSet(pkgs []*ScriptPackage) (*PackagesToInstall, error) {
 	var pti PackagesToInstall
 	pti.Installers = make(map[string]PackageInstaller)
 	pti.Dependencies = make(map[string][]string)
 	pti.Scripts = make(map[string]*ScriptPackage)
 	pti.Installed = make(map[string]bool)
 
-	seen := map[string]int{
-		pkg.ID(): 0,
-	}
+	seen := map[string]int{}
+	for _, pkg := range pkgs {
+		seen[pkg.ID()] = 0
 
-	err := p.consider(pkg, &pti, seen)
-	if err != nil {
-		return nil, err
+		err := p.consider(pkg, &pti, seen)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var toCheck []string

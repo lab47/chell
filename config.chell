@@ -1,5 +1,22 @@
-chell = repo(
+repo(
   path: "../chell-packages",
 )
 
-root = chell
+import go, neovim, node, gopls, tmux
+
+install(
+  neovim,
+  node,
+  gopls,
+  tmux,
+
+  go.build_module(
+    name: "mockery",
+
+    src: fetch.github(
+      org: "vektra",
+      repo: "mockery",
+      rev: "aabbcc",
+    ),
+  )
+)
