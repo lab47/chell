@@ -1,0 +1,15 @@
+import fetch, go, neovim, node, gopls, tmux
+
+install(
+  neovim,
+  node,
+  gopls,
+  tmux,
+  go,
+
+  go.build_module(
+    name: "mockery",
+    path: "github.com/vektra/mockery",
+    version: "v1.1.2",
+  )
+)

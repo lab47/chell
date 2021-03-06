@@ -3,7 +3,7 @@ package evt
 import (
 	"encoding/binary"
 	"fmt"
-	"hash"
+	"io"
 	"reflect"
 
 	"golang.org/x/crypto/blake2b"
@@ -20,7 +20,11 @@ func Hash(v interface{}) ([]byte, error) {
 	return h.Sum(nil), nil
 }
 
-func hashVal(v reflect.Value, h hash.Hash) error {
+func HashInto(v interface{}, h io.Writer) error {
+	return hashVal(reflect.ValueOf(v), h)
+}
+
+func hashVal(v reflect.Value, h io.Writer) error {
 	t := reflect.TypeOf(0)
 
 	// Loop since these can be wrapped in multiple layers of pointers
@@ -50,9 +54,9 @@ func hashVal(v reflect.Value, h hash.Hash) error {
 	// Binary writing can use raw ints, we have to convert to
 	// a sized-int, we'll choose the largest...
 	switch v.Kind() {
-	case reflect.Int:
+	case reflect.Int, reflect.Int16, reflect.Int32:
 		v = reflect.ValueOf(int64(v.Int()))
-	case reflect.Uint:
+	case reflect.Uint, reflect.Uint16, reflect.Uint32:
 		v = reflect.ValueOf(uint64(v.Uint()))
 	case reflect.Bool:
 		var tmp int8
@@ -74,7 +78,7 @@ func hashVal(v reflect.Value, h hash.Hash) error {
 	case reflect.Array:
 		l := v.Len()
 		for i := 0; i < l; i++ {
-			err := hashVal(v.Index(i), nil)
+			err := hashVal(v.Index(i), h)
 			if err != nil {
 				return err
 			}
@@ -102,7 +106,7 @@ func hashVal(v reflect.Value, h hash.Hash) error {
 				return err
 			}
 
-			if h == nil {
+			if agg == nil {
 				agg = eh.Sum(nil)
 			} else {
 				for i, x := range eh.Sum(nil) {
@@ -113,13 +117,35 @@ func hashVal(v reflect.Value, h hash.Hash) error {
 
 		h.Write(agg)
 	case reflect.Struct:
+		// scratch := make([]byte, h.Size())
+
 		t := v.Type()
-		err := hashVal(reflect.ValueOf(t.Name()), h)
+
+		name := t.Name()
+
+		l := v.NumField()
+
+		for i := 0; i < l; i++ {
+			field := t.Field(i)
+			if field.Name == "_" {
+				tag := field.Tag.Get("hash")
+				if tag == "ignore" || tag == "-" {
+					// Ignore this field
+					continue
+				}
+
+				name = tag
+			}
+		}
+
+		err := hashVal(reflect.ValueOf(name), h)
 		if err != nil {
 			return err
 		}
 
-		l := v.NumField()
+		// Build the hash for the struct. We do this by XOR-ing all the fields
+		// hashes. This makes it deterministic despite ordering.
+		var agg []byte
 		for i := 0; i < l; i++ {
 			if innerV := v.Field(i); v.CanSet() || t.Field(i).Name != "_" {
 				fieldType := t.Field(i)
@@ -134,17 +160,28 @@ func hashVal(v reflect.Value, h hash.Hash) error {
 					continue
 				}
 
-				err := hashVal(reflect.ValueOf(fieldType.Name), h)
+				eh, _ := blake2b.New256(nil)
+
+				err := hashVal(reflect.ValueOf(fieldType.Name), eh)
 				if err != nil {
 					return err
 				}
 
-				err = hashVal(innerV, h)
+				err = hashVal(innerV, eh)
 				if err != nil {
 					return err
 				}
+
+				if agg == nil {
+					agg = eh.Sum(nil)
+				} else {
+					for i, x := range eh.Sum(nil) {
+						agg[i] ^= x
+					}
+				}
 			}
 		}
+		h.Write(agg)
 	case reflect.Slice:
 		l := v.Len()
 		for i := 0; i < l; i++ {

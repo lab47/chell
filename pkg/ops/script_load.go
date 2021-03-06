@@ -13,6 +13,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/chell/pkg/data"
+	"github.com/lab47/chell/pkg/evt"
 	"github.com/lab47/exprcore/exprcore"
 	"github.com/mr-tron/base58"
 	"github.com/pkg/errors"
@@ -440,40 +441,16 @@ func (l *ScriptLoad) fileFn(thread *exprcore.Thread, b *exprcore.Builtin, args e
 	var (
 		path, darwin, linux string
 		into                string
-		sum                 exprcore.Tuple
-		chdir               bool
 	)
 
 	if err := exprcore.UnpackArgs(
 		"file", args, kwargs,
 		"path?", &path,
-		"sum?", &sum,
 		"darwin?", &darwin,
 		"linux?", &linux,
 		"into?", &into,
-		"chdir?", &chdir,
 	); err != nil {
 		return nil, err
-	}
-
-	var sumType, sumVal exprcore.String
-
-	if sum != nil {
-		if len(sum) != 2 {
-			return nil, ErrSumFormat
-		}
-
-		var ok bool
-
-		sumType, ok = sum[0].(exprcore.String)
-		if !ok {
-			return nil, ErrSumFormat
-		}
-
-		sumVal, ok = sum[1].(exprcore.String)
-		if !ok {
-			return nil, ErrSumFormat
-		}
 	}
 
 	if path == "" {
@@ -489,33 +466,39 @@ func (l *ScriptLoad) fileFn(thread *exprcore.Thread, b *exprcore.Builtin, args e
 		}
 	}
 
-	var data []byte
+	sdata := thread.Local("script-data").(ScriptData)
 
-	if strings.HasPrefix(path, "./") {
-		sdata := thread.Local("script-data").(ScriptData)
-
-		fdata, err := sdata.Asset(path)
-		if err != nil {
-			return nil, err
-		}
-
-		h, _ := blake2b.New256(nil)
-		h.Write(fdata)
-
-		sumType = "b2"
-		sumVal = exprcore.String(base58.Encode(h.Sum(nil)))
-
-		data = fdata
+	data, err := sdata.Asset(path)
+	if err != nil {
+		return nil, err
 	}
 
-	return &ScriptFile{
-		path:     path,
-		into:     into,
-		sumType:  string(sumType),
-		sumValue: string(sumVal),
-		data:     data,
-		chdir:    chdir,
-	}, nil
+	h, _ := blake2b.New256(nil)
+	h.Write(data)
+
+	sumVal := base58.Encode(h.Sum(nil))
+
+	name := "fetch-file"
+
+	work := &evt.Statements{
+		Statements: []evt.EVTNode{
+			&evt.WriteFile{
+				Target: evt.FSPath(into),
+				Data:   data,
+			},
+		},
+	}
+
+	inst, err := NewWorkInstance(name, work)
+	if err != nil {
+		return nil, err
+	}
+
+	inst.Version = sumVal[:8]
+
+	inst.Signature = sumVal
+
+	return inst, nil
 }
 
 func hashDir(l hclog.Logger, dir string) ([]byte, error) {

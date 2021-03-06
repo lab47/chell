@@ -10,7 +10,9 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/chell/pkg/evt"
 	"github.com/lab47/chell/pkg/lang"
 	"github.com/lab47/exprcore/exprcore"
 	"github.com/mr-tron/base58"
@@ -33,6 +35,8 @@ type ScriptCalcSig struct {
 	Inputs       []ScriptInput
 	Dependencies []*ScriptPackage
 	Instances    []*Instance
+
+	Work *evt.Statements
 }
 
 func (s *ScriptCalcSig) extract(proto *exprcore.Prototype) error {
@@ -181,6 +185,23 @@ func (c *calcLogger) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
+type sigDataInstance struct {
+	_         struct{} `hash:"instance"`
+	Name      string
+	Version   string
+	Signature string
+}
+
+type sigData struct {
+	_            struct{} `hash:"signature"`
+	Name         string
+	Version      string
+	Constraints  map[string]string
+	Instances    []*sigDataInstance
+	Work         *evt.Statements
+	Dependencies map[string]struct{}
+}
+
 func (s *ScriptCalcSig) calcSig(
 	proto *exprcore.Prototype,
 	data ScriptData,
@@ -194,119 +215,101 @@ func (s *ScriptCalcSig) calcSig(
 		}
 	}
 
-	hb, _ := blake2b.New256(nil)
-
-	h := &calcLogger{logger: s.L(), h: hb}
-
-	fmt.Fprintf(h, "name: %s\n", s.Name)
-
-	fmt.Fprintf(h, "version: %s\n", s.Version)
-
-	var keys []string
-
-	for k := range constraints {
-		keys = append(keys, k)
-	}
-
-	sort.Strings(keys)
-
-	for _, k := range keys {
-		fmt.Fprintf(h, "constraint %s = %s\n", k, constraints[k])
+	sd := sigData{
+		Name:        s.Name,
+		Version:     s.Version,
+		Constraints: constraints,
 	}
 
 	if s.Inputs != nil {
-		instances, err := s.injectInputs(h, data)
+		instances, err := s.injectInputs(data)
 		if err != nil {
 			return "", err
 		}
 
 		s.Instances = instances
-	}
 
-	if s.Install != nil {
-		err := s.callAsCalc(s.Install, h)
-		if err != nil {
-			return "", err
+		for _, i := range instances {
+			sd.Instances = append(sd.Instances, &sigDataInstance{
+				Name:      i.Name,
+				Version:   i.Version,
+				Signature: i.Signature,
+			})
 		}
 	}
 
-	var depIds []string
+	if s.Install != nil {
+		work, err := s.calcWork(s.Install)
+		if err != nil {
+			return "", err
+		}
 
-	for _, scr := range s.Dependencies {
-		depIds = append(depIds, scr.ID())
+		s.Work = work
+		sd.Work = work
 	}
 
-	sort.Strings(depIds)
+	sd.Dependencies = make(map[string]struct{})
 
-	for _, id := range depIds {
-		fmt.Fprintf(h, "dep: %s\n", id)
+	for _, scr := range s.Dependencies {
+		sd.Dependencies[scr.ID()] = struct{}{}
+	}
+
+	hb, _ := blake2b.New256(nil)
+
+	h := &calcLogger{logger: s.L(), h: hb}
+
+	err := evt.HashInto(&sd, h)
+	if err != nil {
+		return "", err
 	}
 
 	return base58.Encode(hb.Sum(nil)), nil
 }
 
-func (s *ScriptCalcSig) callAsCalc(fn exprcore.Value, h io.Writer) error {
+func (s *ScriptCalcSig) calcWork(fn exprcore.Value) (*evt.Statements, error) {
 	var rc RunCtx
 	rc.attrs = RunCtxFunctions
+	rc.topDir = "$top"
+	rc.buildDir = "$build"
+	rc.installDir = "$prefix"
+
+	var top evt.Statements
+
+	rc.top = &top
 
 	args := exprcore.Tuple{&rc}
 
 	var thread exprcore.Thread
 
-	/*
-		thread.CallTrace = func(thread *exprcore.Thread, c exprcore.Callable, args exprcore.Tuple, kwargs []exprcore.Tuple) (exprcore.Value, error) {
-			switch v := c.(type) {
-			case *exprcore.Builtin:
-				rec := v.Receiver()
-				if rec == nil {
-					fmt.Printf("+ %s", v.Name())
-				} else {
-					fmt.Printf("+ %s.%s", rec.String(), v.Name())
-				}
-			case *exprcore.Function:
-				fmt.Printf("+ %s", v.Name())
-			default:
-				fmt.Printf("+ %#v", v)
-			}
-
-			fmt.Printf("(%s, ", args)
-
-			for _, p := range kwargs {
-				fmt.Printf("[%s] ", p.String())
-			}
-
-			fmt.Printf(")\n")
-
-			return nil, exprcore.CallContinue
-		}
-	*/
-
-	fmt.Fprintf(h, "install fn\n")
-
-	rc.h = h
-
 	_, err := exprcore.Call(&thread, fn, args, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	return &top, nil
 }
 
 func (s *ScriptCalcSig) calcInstance(inst *Instance) error {
-	h, _ := blake2b.New256(nil)
+	if inst.Work == nil {
+		work, err := s.calcWork(inst.Fn)
+		if err != nil {
+			return err
+		}
 
-	err := s.callAsCalc(inst.Fn, h)
+		inst.Work = work
+	}
+
+	sum, err := evt.Hash(inst.Work)
 	if err != nil {
 		return err
 	}
 
-	inst.Signature = base58.Encode(h.Sum(nil))
+	inst.Signature = base58.Encode(sum)
 
 	return nil
 }
 
-func (s *ScriptCalcSig) injectInputs(w io.Writer, data ScriptData) ([]*Instance, error) {
+func (s *ScriptCalcSig) injectInputs(data ScriptData) ([]*Instance, error) {
 	var instances []*Instance
 
 	for _, i := range s.Inputs {
@@ -318,23 +321,25 @@ func (s *ScriptCalcSig) injectInputs(w io.Writer, data ScriptData) ([]*Instance,
 				}
 			}
 
-			fmt.Fprintf(w, "instance %s-%s-%s\n",
-				i.Instance.Name, i.Instance.Version, i.Instance.Signature)
-
 			instances = append(instances, i.Instance)
 			continue
 		}
 
-		algo, h, ok := s.hashPath(i.Data, data)
-		if !ok {
-			return nil, fmt.Errorf("missing sum for input: %s", i.Data.path)
-		}
+		spew.Dump(i)
+		panic("not supported")
 
-		fmt.Fprintf(w, "path: %s\nalgo: %s\n", i.Data.path, algo)
-		_, err := w.Write(h)
-		if err != nil {
-			return nil, err
-		}
+		/*
+			algo, h, ok := s.hashPath(i.Data, data)
+			if !ok {
+				return nil, fmt.Errorf("missing sum for input: %s", i.Data.path)
+			}
+
+			fmt.Fprintf(w, "path: %s\nalgo: %s\n", i.Data.path, algo)
+			_, err := w.Write(h)
+			if err != nil {
+				return nil, err
+			}
+		*/
 	}
 
 	return instances, nil

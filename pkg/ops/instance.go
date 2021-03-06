@@ -5,16 +5,20 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"github.com/lab47/chell/pkg/evt"
 	"github.com/lab47/exprcore/exprcore"
 	"github.com/mr-tron/base58"
 )
 
 type Instance struct {
+	Id           string
 	Name         string
 	Version      string
 	Signature    string
 	Fn           exprcore.Callable
 	Dependencies []*ScriptPackage
+
+	Work *evt.Statements
 }
 
 func (i *Instance) ID() string {
@@ -23,6 +27,11 @@ func (i *Instance) ID() string {
 	}
 
 	return fmt.Sprintf("%s-%s-%s", i.Signature, i.Name, i.Version)
+}
+
+func NewWorkInstance(name string, work *evt.Statements) (*Instance, error) {
+	inst := &Instance{Name: name, Work: work}
+	return inst, nil
 }
 
 func NewInstance(name string, fn exprcore.Callable) (*Instance, error) {
@@ -82,7 +91,7 @@ func (i *Instance) Truth() exprcore.Bool {
 // is not exposed to the exprcore program.
 func (i *Instance) Hash() (uint32, error) {
 	h := fnv.New32()
-	fmt.Fprintf(h, "%s", i.Name, i.Version)
+	fmt.Fprintf(h, "%s%s", i.Name, i.Version)
 
 	fn, err := i.Fn.Hash()
 	if err != nil {

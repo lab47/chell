@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 
 	"github.com/lab47/chell/pkg/data"
-	"github.com/lab47/exprcore/exprcore"
 	"github.com/pkg/errors"
 )
 
@@ -162,7 +161,7 @@ func (p *PackageCalcInstall) consider(
 		}
 
 		sp.cs.Dependencies = dep.Dependencies
-		sp.cs.Install = dep.Fn.(*exprcore.Function)
+		sp.cs.Work = dep.Work
 
 		err = p.consider(sp, pti, seen)
 		if err != nil {
